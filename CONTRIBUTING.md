@@ -77,7 +77,7 @@
 git checkout dev
 git pull origin dev
 git checkout -b ai/churn-model-baseline
-
+```
 ## 2. 🔀 머지 규칙 (Merge Rules)
 
 ### GitHub Branch Protection Rules 설정 (권장)
