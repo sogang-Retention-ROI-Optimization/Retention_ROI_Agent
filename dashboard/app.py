@@ -358,17 +358,30 @@ elif view == "3. Uplift + CLV 상위 고객":
 
     plot_df = top_customers.copy()
     plot_df["customer_label"] = plot_df["customer_id"].astype(str)
+    plot_df["bubble_size"] = plot_df["value_score"].clip(lower=0.01)
 
     scatter_fig = px.scatter(
         plot_df,
         x="uplift_score",
         y="clv",
-        size="expected_incremental_profit",
+        size="bubble_size",
         color="uplift_segment",
-        hover_data=["customer_id", "persona", "churn_probability"],
+        hover_data=[
+            "customer_id",
+            "persona",
+            "churn_probability",
+            "expected_incremental_profit",
+            "value_score",
+        ],
         title="상위 고객의 Uplift-CLV 분포",
+        labels={"bubble_size": "value_score"},
     )
     st.plotly_chart(scatter_fig, use_container_width=True)
+
+    st.caption(
+        "버블 크기는 expected_incremental_profit 대신 value_score(CLV × uplift_score)를 사용합니다. "
+        "일부 고객의 expected_incremental_profit이 음수가 될 수 있어, 상위 고객 수가 커질 때 Plotly size 오류가 발생하던 문제를 방지합니다."
+    )
 
     display_df = plot_df[
         [
@@ -377,6 +390,7 @@ elif view == "3. Uplift + CLV 상위 고객":
             "churn_probability",
             "uplift_score",
             "clv",
+            "value_score",
             "expected_incremental_profit",
             "uplift_segment",
         ]
@@ -384,6 +398,7 @@ elif view == "3. Uplift + CLV 상위 고객":
     display_df["churn_probability"] = display_df["churn_probability"].map(lambda x: f"{x:.3f}")
     display_df["uplift_score"] = display_df["uplift_score"].map(lambda x: f"{x:.3f}")
     display_df["clv"] = display_df["clv"].map(money)
+    display_df["value_score"] = display_df["value_score"].map(money)
     display_df["expected_incremental_profit"] = display_df["expected_incremental_profit"].map(money)
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
