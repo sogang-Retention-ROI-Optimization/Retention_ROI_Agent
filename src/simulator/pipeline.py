@@ -7,6 +7,7 @@ import pandas as pd
 
 from .config import DEFAULT_CONFIG, SimulationConfig
 from .customer_generator import generate_customers
+from .cohort_analysis import build_cohort_retention
 from .event_engine import simulate_events
 from .exporter import export_tables
 from .personas import DEFAULT_PERSONAS
@@ -199,49 +200,14 @@ def _build_cohort_retention(
     customers: pd.DataFrame,
     events: pd.DataFrame,
     periods: int = 7,
+    end_date: Optional[str] = None,
 ) -> pd.DataFrame:
-    if events.empty:
-        cohort_months = sorted(customers["acquisition_month"].unique())
-        return pd.DataFrame(
-            [
-                {"cohort_month": month, "period": p, "retention_rate": (1.0 if p == 0 else 0.0)}
-                for month in cohort_months
-                for p in range(periods)
-            ]
-        )
-
-    visit_events = events[events["event_type"] == "visit"][["customer_id", "timestamp"]].copy()
-    visit_events["event_time"] = pd.to_datetime(visit_events["timestamp"])
-    visit_events["event_month_num"] = visit_events["event_time"].dt.year * 12 + visit_events["event_time"].dt.month
-
-    base = customers[["customer_id", "acquisition_month"]].copy()
-    cohort_month = base["acquisition_month"].astype(str)
-    cohort_year = cohort_month.str.slice(0, 4).astype(int)
-    cohort_mon = cohort_month.str.slice(5, 7).astype(int)
-    base["cohort_month"] = cohort_month
-    base["cohort_month_num"] = cohort_year * 12 + cohort_mon
-
-    merged = visit_events.merge(base[["customer_id", "cohort_month", "cohort_month_num"]], on="customer_id", how="left")
-    merged["period"] = merged["event_month_num"] - merged["cohort_month_num"]
-    merged = merged[(merged["period"] >= 0) & (merged["period"] < periods)]
-
-    cohort_sizes = base.groupby("cohort_month")["customer_id"].nunique()
-    active_counts = merged.groupby(["cohort_month", "period"])["customer_id"].nunique()
-
-    rows = []
-    for cohort_month, size in cohort_sizes.items():
-        for p in range(periods):
-            count = int(active_counts.get((cohort_month, p), 0))
-            rate = count / max(int(size), 1)
-            rows.append(
-                {
-                    "cohort_month": str(cohort_month),
-                    "period": int(p),
-                    "retention_rate": float(rate),
-                }
-            )
-
-    return pd.DataFrame(rows).sort_values(["cohort_month", "period"]).reset_index(drop=True)
+    return build_cohort_retention(
+        customers=customers,
+        events=events,
+        periods=periods,
+        end_date=end_date,
+    )
 
 
 def run_simulation(
@@ -284,7 +250,12 @@ def run_simulation(
         final_state=final_state,
         config=config,
     )
-    cohort_retention = _build_cohort_retention(customers=customers, events=events, periods=7)
+    cohort_retention = _build_cohort_retention(
+        customers=customers,
+        events=events,
+        periods=7,
+        end_date=config.end_date,
+    )
 
     tables: Dict[str, pd.DataFrame] = {
         "customers": customers,
