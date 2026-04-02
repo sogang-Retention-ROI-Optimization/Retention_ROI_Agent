@@ -5,4 +5,19 @@ __pycache__/
 venv/
 .DS_Store
 .env
-data/raw/
+
+# Generated simulation data
+data/raw/*
+!data/raw/.gitkeep
+
+# Generated feature store
+data/feature_store/*
+!data/feature_store/.gitkeep
+
+# Trained models
+models/*
+!models/.gitkeep
+
+# Generated reports / plots / optimization outputs
+results/*
+!results/.gitkeep
