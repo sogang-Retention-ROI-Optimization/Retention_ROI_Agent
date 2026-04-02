@@ -63,6 +63,7 @@ python src/main.py --mode simulate
 python src/main.py --mode features
 python src/main.py --mode train
 python src/main.py --mode uplift
+python src/main.py --mode optimize --budget 50000000
 docker compose up --build
 ```
 
@@ -73,5 +74,6 @@ python src/main.py --mode simulate --force --randomize
 python src/main.py --mode features
 python src/main.py --mode train
 python src/main.py --mode uplift
+python src/main.py --mode optimize --budget 50000000
 docker compose up --build
 ```
