@@ -10,16 +10,23 @@ if str(ROOT) not in sys.path:
 
 from src.workflows.pipeline_runner import (
     ensure_simulation_outputs,
+    run_ab_test_pipeline,
     run_churn_training_pipeline,
+    run_clv_prediction_pipeline,
     run_feature_engineering_pipeline,
     run_optimize_pipeline,
+    run_segmentation_priority_pipeline,
     run_uplift_pipeline,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Retention ROI project entrypoint")
-    parser.add_argument("--mode", required=True, choices=["features", "train", "uplift", "optimize", "simulate"])
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["features", "train", "uplift", "clv", "segment", "optimize", "abtest", "simulate"],
+    )
     parser.add_argument("--budget", type=int, default=50000000)
     parser.add_argument("--data-dir", default="data/raw")
     parser.add_argument("--model-dir", default="models")
@@ -96,6 +103,24 @@ def main() -> int:
         )
     elif args.mode == "uplift":
         result = run_uplift_pipeline(
+            data_dir,
+            result_dir,
+            **common_simulation_kwargs,
+        )
+    elif args.mode == "clv":
+        result = run_clv_prediction_pipeline(
+            data_dir,
+            result_dir,
+            **common_simulation_kwargs,
+        )
+    elif args.mode == "segment":
+        result = run_segmentation_priority_pipeline(
+            data_dir,
+            result_dir,
+            **common_simulation_kwargs,
+        )
+    elif args.mode == "abtest":
+        result = run_ab_test_pipeline(
             data_dir,
             result_dir,
             **common_simulation_kwargs,
