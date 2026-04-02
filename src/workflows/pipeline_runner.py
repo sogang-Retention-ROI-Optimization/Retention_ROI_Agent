@@ -7,9 +7,14 @@ from typing import Dict, Optional
 import pandas as pd
 
 from src.api.services.analytics import allocate_budget, budget_allocation_by_segment
+from src.clv.modeling import run_clv_pipeline
+from src.experiments.ab_testing import run_ab_test_analysis
 from src.features.engineering import build_feature_dataset
+from src.optimization.budgeting import run_budget_optimization
+from src.segmentation.prioritization import run_segmentation_pipeline
 from src.simulator.config import DEFAULT_CONFIG, SimulationConfig
 from src.simulator.pipeline import run_simulation
+from src.uplift.modeling import run_uplift_modeling
 
 
 def ensure_directory(path: Path) -> Path:
@@ -121,8 +126,6 @@ def run_churn_training_pipeline(
     simulation_seed: Optional[int] = None,
     randomize_simulation: bool = False,
 ) -> Dict:
-    # lazy import:
-    # features 모드에서 불필요하게 LightGBM/OpenMP 로딩이 일어나지 않게 한다.
     from src.ml.churn_training import train_churn_models
 
     model_dir = ensure_directory(model_dir)
@@ -170,43 +173,84 @@ def run_uplift_pipeline(
     randomize_simulation: bool = False,
 ) -> Dict:
     result_dir = ensure_directory(result_dir)
-    df = load_customer_summary(
+    ensure_simulation_outputs(
         data_dir,
-        force_simulation=force_simulation,
-        simulation_seed=simulation_seed,
-        randomize_simulation=randomize_simulation,
-    ).copy()
+        force=force_simulation,
+        random_seed=simulation_seed,
+        randomize=randomize_simulation,
+    )
 
-    output = df[
-        [
-            "customer_id",
-            "persona",
-            "uplift_score",
-            "uplift_segment",
-            "clv",
-            "churn_probability",
-            "expected_incremental_profit",
-            "expected_roi",
-        ]
-    ].sort_values(["uplift_score", "clv"], ascending=False)
-
-    out_path = result_dir / "uplift_segmentation.csv"
-    output.to_csv(out_path, index=False)
-
-    meta = {
-        "rows": int(len(output)),
-        "segment_counts": output["uplift_segment"].value_counts().to_dict(),
-    }
-    meta_path = result_dir / "uplift_summary.json"
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    artifacts = run_uplift_modeling(data_dir=data_dir, result_dir=result_dir)
+    summary = json.loads(Path(artifacts.summary_path).read_text(encoding="utf-8"))
 
     return {
         "mode": "uplift",
         "model_path": None,
-        "metrics_path": str(meta_path),
-        "primary_result_path": str(out_path),
-        "extra_result_paths": [],
-        "metadata": meta,
+        "metrics_path": artifacts.summary_path,
+        "primary_result_path": artifacts.segmentation_path,
+        "extra_result_paths": [
+            artifacts.model_comparison_path,
+            artifacts.qini_curve_path,
+            artifacts.uplift_curve_path,
+            artifacts.persuadables_analysis_path,
+        ],
+        "metadata": summary,
+    }
+
+
+def run_clv_prediction_pipeline(
+    data_dir: Path,
+    result_dir: Path,
+    force_simulation: bool = False,
+    simulation_seed: Optional[int] = None,
+    randomize_simulation: bool = False,
+) -> Dict:
+    result_dir = ensure_directory(result_dir)
+    ensure_simulation_outputs(
+        data_dir,
+        force=force_simulation,
+        random_seed=simulation_seed,
+        randomize=randomize_simulation,
+    )
+    artifacts = run_clv_pipeline(data_dir=data_dir, result_dir=result_dir)
+    metrics = json.loads(Path(artifacts.metrics_path).read_text(encoding="utf-8"))
+    return {
+        "mode": "clv",
+        "model_path": None,
+        "metrics_path": artifacts.metrics_path,
+        "primary_result_path": artifacts.predictions_path,
+        "extra_result_paths": [artifacts.distribution_report_path, artifacts.distribution_plot_path],
+        "metadata": metrics,
+    }
+
+
+def run_segmentation_priority_pipeline(
+    data_dir: Path,
+    result_dir: Path,
+    force_simulation: bool = False,
+    simulation_seed: Optional[int] = None,
+    randomize_simulation: bool = False,
+) -> Dict:
+    result_dir = ensure_directory(result_dir)
+    ensure_simulation_outputs(
+        data_dir,
+        force=force_simulation,
+        random_seed=simulation_seed,
+        randomize=randomize_simulation,
+    )
+    if not (result_dir / "uplift_segmentation.csv").exists():
+        run_uplift_pipeline(data_dir, result_dir)
+    if not (result_dir / "clv_predictions.csv").exists():
+        run_clv_prediction_pipeline(data_dir, result_dir)
+    artifacts = run_segmentation_pipeline(result_dir=result_dir, data_dir=data_dir)
+    summary = json.loads(Path(artifacts.summary_path).read_text(encoding="utf-8"))
+    return {
+        "mode": "segment",
+        "model_path": None,
+        "metrics_path": artifacts.summary_path,
+        "primary_result_path": artifacts.customer_segments_path,
+        "extra_result_paths": [artifacts.visualization_path],
+        "metadata": summary,
     }
 
 
@@ -219,29 +263,53 @@ def run_optimize_pipeline(
     randomize_simulation: bool = False,
 ) -> Dict:
     result_dir = ensure_directory(result_dir)
-    df = load_customer_summary(
+    ensure_simulation_outputs(
         data_dir,
-        force_simulation=force_simulation,
-        simulation_seed=simulation_seed,
-        randomize_simulation=randomize_simulation,
+        force=force_simulation,
+        random_seed=simulation_seed,
+        randomize=randomize_simulation,
     )
+    if not (result_dir / "uplift_segmentation.csv").exists():
+        run_uplift_pipeline(data_dir, result_dir)
+    if not (result_dir / "clv_predictions.csv").exists():
+        run_clv_prediction_pipeline(data_dir, result_dir)
+    if not (result_dir / "customer_segments.csv").exists():
+        run_segmentation_priority_pipeline(data_dir, result_dir)
 
-    selected, summary = allocate_budget(df, budget=budget)
-    segment_allocation = budget_allocation_by_segment(selected)
-
-    selected_path = result_dir / "optimization_selected_customers.csv"
-    segment_path = result_dir / "optimization_segment_budget.csv"
-    summary_path = result_dir / "optimization_summary.json"
-
-    selected.to_csv(selected_path, index=False)
-    segment_allocation.to_csv(segment_path, index=False)
-    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-
+    artifacts = run_budget_optimization(result_dir=result_dir, budget=budget)
     return {
         "mode": "optimize",
         "model_path": None,
-        "metrics_path": str(summary_path),
-        "primary_result_path": str(segment_path),
-        "extra_result_paths": [str(selected_path)],
-        "metadata": summary,
+        "metrics_path": artifacts.summary_path,
+        "primary_result_path": artifacts.segment_path,
+        "extra_result_paths": [artifacts.selected_path, artifacts.scenario_path],
+        "metadata": artifacts.summary,
+    }
+
+
+def run_ab_test_pipeline(
+    data_dir: Path,
+    result_dir: Path,
+    force_simulation: bool = False,
+    simulation_seed: Optional[int] = None,
+    randomize_simulation: bool = False,
+) -> Dict:
+    result_dir = ensure_directory(result_dir)
+    ensure_simulation_outputs(
+        data_dir,
+        force=force_simulation,
+        random_seed=simulation_seed,
+        randomize=randomize_simulation,
+    )
+    if not (result_dir / "uplift_segmentation.csv").exists():
+        run_uplift_pipeline(data_dir, result_dir)
+    artifacts = run_ab_test_analysis(result_dir=result_dir)
+    metrics = json.loads(Path(artifacts.result_path).read_text(encoding="utf-8"))
+    return {
+        "mode": "abtest",
+        "model_path": None,
+        "metrics_path": artifacts.result_path,
+        "primary_result_path": artifacts.report_path,
+        "extra_result_paths": [],
+        "metadata": metrics,
     }
