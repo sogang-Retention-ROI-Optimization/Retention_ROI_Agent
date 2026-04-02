@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 from src.workflows.pipeline_runner import (
     ensure_simulation_outputs,
     run_churn_training_pipeline,
+    run_feature_engineering_pipeline,
     run_optimize_pipeline,
     run_uplift_pipeline,
 )
@@ -18,11 +19,12 @@ from src.workflows.pipeline_runner import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Retention ROI project entrypoint')
-    parser.add_argument('--mode', required=True, choices=['train', 'uplift', 'optimize', 'simulate'])
+    parser.add_argument('--mode', required=True, choices=['features', 'train', 'uplift', 'optimize', 'simulate'])
     parser.add_argument('--budget', type=int, default=50000000)
     parser.add_argument('--data-dir', default='data/raw')
     parser.add_argument('--model-dir', default='models')
     parser.add_argument('--result-dir', default='results')
+    parser.add_argument('--feature-store-dir', default='data/feature_store')
     return parser
 
 
@@ -31,18 +33,19 @@ def main() -> int:
     data_dir = Path(args.data_dir)
     model_dir = Path(args.model_dir)
     result_dir = Path(args.result_dir)
-
+    feature_store_dir = Path(args.feature_store_dir)
     if args.mode == 'simulate':
         ensure_simulation_outputs(data_dir)
         print(f'Simulation outputs are ready in {data_dir}')
         return 0
-    if args.mode == 'train':
-        result = run_churn_training_pipeline(data_dir, model_dir, result_dir)
+    if args.mode == 'features':
+        result = run_feature_engineering_pipeline(data_dir, result_dir, feature_store_dir=feature_store_dir)
+    elif args.mode == 'train':
+        result = run_churn_training_pipeline(data_dir, model_dir, result_dir, feature_store_dir=feature_store_dir)
     elif args.mode == 'uplift':
         result = run_uplift_pipeline(data_dir, result_dir)
     else:
         result = run_optimize_pipeline(data_dir, result_dir, budget=args.budget)
-
     print(f"Mode: {result['mode']}")
     if result.get('model_path'):
         print(f"Model saved to: {result['model_path']}")

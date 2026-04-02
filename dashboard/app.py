@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from dashboard.services.artifact_loader import load_dashboard_artifacts
 from dashboard.services.churn_service import get_churn_status
 from dashboard.services.cohort_service import (
     get_cohort_curve,
@@ -42,6 +43,11 @@ st.set_page_config(
 @st.cache_data
 def load_app_data():
     return load_dashboard_bundle()
+
+
+@st.cache_data
+def load_saved_artifacts():
+    return load_dashboard_artifacts()
 
 
 def _payload_hash(*parts: str) -> str:
@@ -170,12 +176,30 @@ def render_llm_panel(
 
 
 bundle = load_app_data()
+artifacts = load_saved_artifacts()
+
 customers = bundle.customer_summary
 cohort_df = bundle.cohort_retention
 
 st.title("AI 기반 고객 이탈 예측 및 리텐션 ROI 최적화 대시보드")
+
 if bundle.used_mock:
     st.warning("실제 data/raw 산출물을 찾지 못해 mock data로 실행 중입니다.")
+elif bundle.source_dir:
+    st.success(f"실제 시뮬레이터 산출물 사용 중: {bundle.source_dir}")
+
+artifact_flags = []
+if artifacts.feature_summary:
+    artifact_flags.append("feature summary")
+if artifacts.churn_metrics:
+    artifact_flags.append("train artifacts")
+if artifacts.uplift_summary is not None or not artifacts.uplift_segmentation.empty:
+    artifact_flags.append("uplift artifacts")
+if artifacts.optimization_summary is not None or not artifacts.optimization_segment_budget.empty:
+    artifact_flags.append("optimize artifacts")
+
+if artifact_flags:
+    st.caption("감지된 저장 결과: " + ", ".join(artifact_flags))
 
 with st.sidebar:
     st.header("제어 패널")
@@ -189,6 +213,8 @@ with st.sidebar:
             "4. 예산 배분 결과",
             "5. 예상 최적화 ROI",
             "6. 리텐션 대상 고객 목록",
+            "7. 학습 결과 아티팩트",
+            "8. 저장된 Uplift/최적화 결과",
         ],
     )
 
@@ -234,6 +260,17 @@ with st.sidebar:
         )
 
     st.divider()
+    st.subheader("실행 / 새로고침")
+    if st.button("데이터/결과 새로고침", use_container_width=True):
+        load_app_data.clear()
+        load_saved_artifacts.clear()
+        st.rerun()
+
+    st.caption(
+        "기존 4·5번 화면은 저장 파일을 읽는 것이 아니라 현재 data/raw를 기준으로 다시 계산합니다."
+    )
+
+    st.divider()
     st.subheader("LLM 설정")
     st.caption(
         "권장: API 키는 코드에 쓰지 말고 환경변수 `OPENAI_API_KEY` 또는 Streamlit secrets로 관리하세요."
@@ -262,7 +299,6 @@ selected_customers, optimize_summary, segment_allocation = get_budget_result(
     max_customers=target_cap,
 )
 retention_targets = get_retention_targets(customers, threshold, top_n=top_n)
-
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("전체 고객 수", f"{churn_summary['total_customers']:,}")
@@ -358,7 +394,7 @@ elif view == "2. 코호트 리텐션 곡선":
 
     st.caption(
         "period 0은 코호트 정의상 100%로 고정하고, 아직 관측할 수 없는 미래 period는 0이 아니라 공란으로 둡니다. "
-        "그래야 최근 코호트가 오른쪽 검열(right censoring) 때문에 과소평가되지 않습니다."
+        "그래야 최근 코호트가 오른쪽 검열 때문에 과소평가되지 않습니다."
     )
 
     if cohort_curve.empty:
@@ -397,14 +433,6 @@ elif view == "2. 코호트 리텐션 곡선":
             .reset_index(drop=True)
         )
 
-        best_last = cohort_summary.get("best_last_cohort")
-        worst_last = cohort_summary.get("worst_last_cohort")
-        if best_last and worst_last:
-            st.markdown(
-                f"**최종 관측 기준 최고 코호트:** {best_last['cohort_month']} (period {best_last['period']}, {best_last['retention_rate']:.2%})"
-                f"**최종 관측 기준 최저 코호트:** {worst_last['cohort_month']} (period {worst_last['period']}, {worst_last['retention_rate']:.2%})"
-            )
-
     llm_payload = {
         "cohort_summary": cohort_summary,
         "retention_curve_summary": numeric_summary(cohort_curve, ["retention_rate"]),
@@ -438,8 +466,7 @@ elif view == "3. Uplift + CLV 상위 고객":
     st.plotly_chart(scatter_fig, use_container_width=True)
 
     st.caption(
-        "버블 크기는 expected_incremental_profit 대신 value_score(CLV × uplift_score)를 사용합니다. "
-        "일부 고객의 expected_incremental_profit이 음수가 될 수 있어, 상위 고객 수가 커질 때 Plotly size 오류를 막습니다."
+        "버블 크기는 expected_incremental_profit 대신 value_score(CLV × uplift_score)를 사용합니다."
     )
 
     display_df = plot_df[
@@ -485,17 +512,13 @@ elif view == "3. Uplift + CLV 상위 고객":
 
 elif view == "4. 예산 배분 결과":
     st.subheader("예산 배분 결과")
+    st.caption("이 화면은 저장된 optimize 결과 파일이 아니라 현재 입력값으로 다시 계산한 결과입니다.")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("총 예산", money(optimize_summary["budget"]))
     m2.metric("집행 예산", money(optimize_summary["spent"]))
     m3.metric("잔여 예산", money(optimize_summary["remaining"]))
     m4.metric("타겟 고객 수", f"{optimize_summary['num_targeted']:,}")
-
-    st.caption(
-        f"이탈 확률 {threshold:.2f} 이상, uplift_score > 0, expected_incremental_profit > 0 인 고객을 후보군으로 두고 "
-        f"ROI 우선순위로 선정했습니다. 최대 타겟 고객 수는 {optimize_summary['max_customers_cap']:,}명입니다."
-    )
 
     candidate_by_segment = pd.DataFrame(
         {
@@ -534,19 +557,6 @@ elif view == "4. 예산 배분 결과":
     llm_payload = {
         "budget_summary": optimize_summary,
         "segment_allocation": segment_allocation.round(4).to_dict(orient="records"),
-        "candidate_segment_counts": optimize_summary.get("candidate_segment_counts", {}),
-        "selected_customer_overview": dataframe_snapshot(
-            selected_customers,
-            columns=[
-                "customer_id",
-                "persona",
-                "uplift_segment",
-                "coupon_cost",
-                "expected_incremental_profit",
-                "expected_roi",
-            ],
-            max_rows=min(12, len(selected_customers)),
-        ),
         "selected_customer_numeric_summary": numeric_summary(
             selected_customers, ["coupon_cost", "expected_incremental_profit", "expected_roi"]
         ),
@@ -554,6 +564,7 @@ elif view == "4. 예산 배분 결과":
 
 elif view == "5. 예상 최적화 ROI":
     st.subheader("예상 최적화 ROI")
+    st.caption("이 화면도 현재 입력값 기준의 실시간 재계산 결과입니다.")
 
     m1, m2, m3 = st.columns(3)
     m1.metric("예상 증분 이익", money(optimize_summary["expected_incremental_profit"]))
@@ -572,11 +583,9 @@ elif view == "5. 예상 최적화 ROI":
         )
         st.plotly_chart(roi_fig, use_container_width=True)
 
-        st.caption(
-            f"후보 고객 {optimize_summary['candidate_customers']:,}명 중 예산 및 최대 타겟 고객 수 제약 아래 선정된 고객만 포함합니다."
+        top_roi = selected_customers.sort_values("expected_roi", ascending=False).head(
+            min(20, len(selected_customers))
         )
-
-        top_roi = selected_customers.sort_values("expected_roi", ascending=False).head(min(20, len(selected_customers)))
         display_df = top_roi[
             [
                 "customer_id",
@@ -601,33 +610,10 @@ elif view == "5. 예상 최적화 ROI":
             selected_customers,
             ["expected_roi", "coupon_cost", "expected_incremental_profit"],
         ),
-        "top_roi_customers": dataframe_snapshot(
-            top_roi,
-            columns=[
-                "customer_id",
-                "persona",
-                "uplift_score",
-                "clv",
-                "coupon_cost",
-                "expected_incremental_profit",
-                "expected_roi",
-            ],
-            max_rows=min(top_n, 12),
-        ),
     }
 
 elif view == "6. 리텐션 대상 고객 목록":
     st.subheader("리텐션 대상 고객 목록")
-
-    st.markdown(
-        """
-        선정 기준 예시:
-        - churn_probability >= threshold
-        - uplift_score > 0.08
-        - CLV가 중간값 이상
-        - Sleeping Dogs 제외
-        """
-    )
 
     if retention_targets.empty:
         st.warning("현재 조건에서 리텐션 타겟 고객이 없습니다.")
@@ -666,19 +652,159 @@ elif view == "6. 리텐션 대상 고객 목록":
         "numeric_summary": numeric_summary(
             retention_targets, ["priority_score", "churn_probability", "uplift_score", "clv"]
         ),
-        "retention_targets": dataframe_snapshot(
-            retention_targets,
-            columns=[
-                "customer_id",
-                "persona",
-                "churn_probability",
-                "uplift_score",
-                "clv",
-                "uplift_segment",
-                "priority_score",
-            ],
-            max_rows=min(top_n, 15),
+    }
+
+elif view == "7. 학습 결과 아티팩트":
+    st.subheader("학습 결과 아티팩트")
+    st.caption("이 화면은 results/, models/, data/feature_store 에 저장된 파일을 직접 읽습니다.")
+
+    if not artifacts.churn_metrics:
+        st.warning("results/churn_metrics.json 을 찾지 못했습니다.")
+    else:
+        metrics = artifacts.churn_metrics
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Best model", str(metrics.get("best_model_name", "-")))
+        m2.metric("Test AUC", f"{float(metrics.get('test_auc_roc', 0.0)):.4f}")
+        m3.metric("Selected threshold", f"{float(metrics.get('selected_threshold', 0.0)):.4f}")
+        m4.metric("Positive rate", f"{float(metrics.get('positive_rate', 0.0)):.2%}")
+
+        st.markdown("### 학습 메타데이터")
+        meta_df = pd.DataFrame(
+            [
+                {"key": "train_rows", "value": metrics.get("train_rows")},
+                {"key": "test_rows", "value": metrics.get("test_rows")},
+                {"key": "numeric_feature_count", "value": metrics.get("numeric_feature_count")},
+                {"key": "categorical_feature_count", "value": metrics.get("categorical_feature_count")},
+                {"key": "lightgbm_available", "value": metrics.get("lightgbm_available")},
+                {"key": "model_path", "value": artifacts.model_paths.get("churn_model")},
+            ]
+        )
+        st.dataframe(meta_df, use_container_width=True, hide_index=True)
+
+    if not artifacts.top_feature_importance.empty:
+        st.markdown("### Top feature importance")
+        st.dataframe(artifacts.top_feature_importance, use_container_width=True, hide_index=True)
+
+    if artifacts.threshold_analysis and artifacts.threshold_analysis.get("selected"):
+        st.markdown("### 선택된 threshold 요약")
+        selected_df = pd.DataFrame([artifacts.threshold_analysis["selected"]])
+        st.dataframe(selected_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### 학습 시각화")
+    image_cols = st.columns(2)
+    image_items = [
+        ("ROC Curve", artifacts.image_paths.get("churn_auc_roc")),
+        ("Precision-Recall Tradeoff", artifacts.image_paths.get("churn_precision_recall_tradeoff")),
+        ("SHAP Summary", artifacts.image_paths.get("churn_shap_summary")),
+        ("SHAP Local", artifacts.image_paths.get("churn_shap_local")),
+    ]
+    for idx, (title, img_path) in enumerate(image_items):
+        with image_cols[idx % 2]:
+            if img_path:
+                st.image(img_path, caption=title, use_container_width=True)
+            else:
+                st.info(f"{title} 파일이 없습니다.")
+
+    if not artifacts.customer_features.empty:
+        st.markdown("### Feature store 미리보기")
+        st.dataframe(
+            artifacts.customer_features.head(20),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    llm_payload = {
+        "churn_metrics": artifacts.churn_metrics or {},
+        "threshold_analysis_selected": (
+            artifacts.threshold_analysis.get("selected", {})
+            if artifacts.threshold_analysis else {}
         ),
+        "top_feature_importance": (
+            artifacts.top_feature_importance.to_dict(orient="records")
+            if not artifacts.top_feature_importance.empty
+            else []
+        ),
+        "feature_store_preview": dataframe_snapshot(
+            artifacts.customer_features,
+            columns=list(artifacts.customer_features.columns[:12]),
+            max_rows=10,
+        ) if not artifacts.customer_features.empty else [],
+    }
+
+elif view == "8. 저장된 Uplift/최적화 결과":
+    st.subheader("저장된 Uplift/최적화 결과")
+    st.caption("이 화면은 results/uplift_*.csv, results/optimization_*.csv/json 을 직접 읽습니다.")
+
+    uplift_tab, optimize_tab = st.tabs(["Uplift 결과", "Optimize 결과"])
+
+    with uplift_tab:
+        if artifacts.uplift_summary is None and artifacts.uplift_segmentation.empty:
+            st.warning("저장된 uplift 결과를 찾지 못했습니다.")
+        else:
+            uplift_summary = artifacts.uplift_summary or {}
+            m1, m2 = st.columns(2)
+            m1.metric("Uplift rows", int(uplift_summary.get("rows", len(artifacts.uplift_segmentation))))
+            segment_counts = uplift_summary.get("segment_counts", {})
+            m2.metric("세그먼트 종류 수", len(segment_counts))
+
+            if segment_counts:
+                seg_df = pd.DataFrame(
+                    {
+                        "uplift_segment": list(segment_counts.keys()),
+                        "customer_count": list(segment_counts.values()),
+                    }
+                )
+                fig = px.bar(seg_df, x="uplift_segment", y="customer_count", text="customer_count")
+                st.plotly_chart(fig, use_container_width=True)
+
+            if not artifacts.uplift_segmentation.empty:
+                st.dataframe(
+                    artifacts.uplift_segmentation.head(30),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+    with optimize_tab:
+        if artifacts.optimization_summary is None and artifacts.optimization_segment_budget.empty:
+            st.warning("저장된 optimize 결과를 찾지 못했습니다.")
+        else:
+            opt_summary = artifacts.optimization_summary or {}
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("저장된 예산", money(opt_summary.get("budget", 0)))
+            m2.metric("저장된 집행 예산", money(opt_summary.get("spent", 0)))
+            m3.metric("저장된 잔여 예산", money(opt_summary.get("remaining", 0)))
+            m4.metric("저장된 타겟 고객 수", f"{int(opt_summary.get('num_targeted', 0)):,}")
+
+            if not artifacts.optimization_segment_budget.empty:
+                display_df = artifacts.optimization_segment_budget.copy()
+                if "allocated_budget" in display_df.columns:
+                    display_df["allocated_budget"] = display_df["allocated_budget"].map(money)
+                if "expected_profit" in display_df.columns:
+                    display_df["expected_profit"] = display_df["expected_profit"].map(money)
+                st.markdown("### 세그먼트별 저장 결과")
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            if not artifacts.optimization_selected_customers.empty:
+                st.markdown("### 저장된 선정 고객")
+                st.dataframe(
+                    artifacts.optimization_selected_customers.head(30),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+    llm_payload = {
+        "uplift_summary": artifacts.uplift_summary or {},
+        "optimization_summary": artifacts.optimization_summary or {},
+        "optimization_segment_budget": (
+            artifacts.optimization_segment_budget.to_dict(orient="records")
+            if not artifacts.optimization_segment_budget.empty
+            else []
+        ),
+        "optimization_selected_preview": dataframe_snapshot(
+            artifacts.optimization_selected_customers,
+            columns=list(artifacts.optimization_selected_customers.columns[:12]),
+            max_rows=12,
+        ) if not artifacts.optimization_selected_customers.empty else [],
     }
 
 if llm_enabled:
