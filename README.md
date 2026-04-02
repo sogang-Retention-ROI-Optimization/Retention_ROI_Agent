@@ -63,7 +63,10 @@ python src/main.py --mode simulate
 python src/main.py --mode features
 python src/main.py --mode train
 python src/main.py --mode uplift
+python src/main.py --mode clv
+python src/main.py --mode segment
 python src/main.py --mode optimize --budget 50000000
+python src/main.py --mode abtest
 docker compose up --build
 ```
 
@@ -74,6 +77,9 @@ python src/main.py --mode simulate --force --randomize
 python src/main.py --mode features
 python src/main.py --mode train
 python src/main.py --mode uplift
+python src/main.py --mode clv
+python src/main.py --mode segment
 python src/main.py --mode optimize --budget 50000000
+python src/main.py --mode abtest
 docker compose up --build
 ```
