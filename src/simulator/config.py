@@ -14,8 +14,8 @@ class SimulationConfig:
     1) Enough samples for treatment/control analysis.
     2) Outputs that remain small enough to run on a student machine.
     """
-
-    n_customers: int = 12000
+    
+    n_customers: int = 20000
     start_date: str = "2025-01-01"
     end_date: str = "2025-12-31"
     signup_months: Sequence[str] = (
@@ -30,7 +30,7 @@ class SimulationConfig:
 
     # Experiment design
     treatment_share: float = 0.50
-    min_customers_per_arm: int = 5000
+    min_customers_per_arm: int = 10000
     stratify_treatment: bool = True
 
     # Marketing / coupon assumptions
