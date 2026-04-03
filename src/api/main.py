@@ -7,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.dependencies import get_settings
 from src.api.routers.analytics import router as analytics_router
+from src.api.routers.artifacts import router as artifacts_router
 from src.api.routers.health import router as health_router
 from src.api.routers.pipeline import router as pipeline_router
+from src.api.routers.recommendations import router as recommendation_router
 from src.api.routers.simulation import router as simulation_router
 from src.api.services.pipeline import bootstrap_data
 
@@ -24,7 +26,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     description='FastAPI backend for the Retention ROI simulator, pipelines, and dashboard.',
-    version='0.2.0',
+    version='0.3.0',
     lifespan=lifespan,
 )
 
@@ -40,3 +42,5 @@ app.include_router(health_router)
 app.include_router(analytics_router, prefix=settings.api_prefix)
 app.include_router(simulation_router, prefix=settings.api_prefix)
 app.include_router(pipeline_router, prefix=settings.api_prefix)
+app.include_router(recommendation_router, prefix=settings.api_prefix)
+app.include_router(artifacts_router, prefix=settings.api_prefix)

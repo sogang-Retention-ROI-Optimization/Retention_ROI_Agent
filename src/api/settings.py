@@ -20,6 +20,7 @@ class ApiSettings:
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("RETENTION_API_DATA_DIR", "data/raw")))
     model_dir: Path = field(default_factory=lambda: Path(os.getenv("RETENTION_MODEL_DIR", "models")))
     result_dir: Path = field(default_factory=lambda: Path(os.getenv("RETENTION_RESULT_DIR", "results")))
+    feature_store_dir: Path = field(default_factory=lambda: Path(os.getenv("RETENTION_FEATURE_STORE_DIR", "data/feature_store")))
     default_budget: int = field(default_factory=lambda: int(os.getenv("RETENTION_API_DEFAULT_BUDGET", "5000000")))
     default_threshold: float = field(default_factory=lambda: float(os.getenv("RETENTION_API_DEFAULT_THRESHOLD", "0.50")))
     allowed_origins: List[str] = field(
@@ -42,6 +43,10 @@ class ApiSettings:
     @property
     def resolved_result_dir(self) -> Path:
         return self.result_dir.resolve()
+
+    @property
+    def resolved_feature_store_dir(self) -> Path:
+        return self.feature_store_dir.resolve()
 
 
 SETTINGS = ApiSettings()

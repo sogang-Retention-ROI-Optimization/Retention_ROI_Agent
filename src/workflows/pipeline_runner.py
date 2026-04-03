@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from src.api.services.analytics import allocate_budget, budget_allocation_by_segment
+from src.api.services.analytics import allocate_budget, budget_allocation_by_segment, get_budget_result
 from src.clv.modeling import run_clv_pipeline
 from src.experiments.ab_testing import run_ab_test_analysis
 from src.features.engineering import build_feature_dataset
@@ -15,6 +15,7 @@ from src.segmentation.prioritization import run_segmentation_pipeline
 from src.simulator.config import DEFAULT_CONFIG, SimulationConfig
 from src.simulator.pipeline import run_simulation
 from src.uplift.modeling import run_uplift_modeling
+from src.recommendations.modeling import run_personalized_recommendation_pipeline
 
 
 def ensure_directory(path: Path) -> Path:
@@ -312,4 +313,56 @@ def run_ab_test_pipeline(
         "primary_result_path": artifacts.report_path,
         "extra_result_paths": [],
         "metadata": metrics,
+    }
+
+
+def run_recommendation_pipeline(
+    data_dir: Path,
+    result_dir: Path,
+    budget: int = 50000000,
+    threshold: float = 0.50,
+    max_customers: Optional[int] = 1000,
+    per_customer: int = 3,
+    candidate_limit: int = 100,
+    force_simulation: bool = False,
+    simulation_seed: Optional[int] = None,
+    randomize_simulation: bool = False,
+) -> Dict:
+    result_dir = ensure_directory(result_dir)
+    ensure_simulation_outputs(
+        data_dir,
+        force=force_simulation,
+        random_seed=simulation_seed,
+        randomize=randomize_simulation,
+    )
+
+    customers = pd.read_csv(data_dir / "customer_summary.csv")
+    selected_customers, budget_summary, _ = get_budget_result(
+        customers=customers,
+        budget=budget,
+        threshold=threshold,
+        max_customers=max_customers,
+    )
+
+    artifacts = run_personalized_recommendation_pipeline(
+        data_dir=data_dir,
+        result_dir=result_dir,
+        per_customer=per_customer,
+        candidate_limit=candidate_limit,
+        target_customers=selected_customers,
+        target_source="optimized_targets",
+    )
+    summary = json.loads(Path(artifacts.summary_path).read_text(encoding="utf-8"))
+    summary["budget_context"] = budget_summary
+    Path(artifacts.summary_path).write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {
+        "mode": "recommend",
+        "model_path": None,
+        "metrics_path": artifacts.summary_path,
+        "primary_result_path": artifacts.recommendations_path,
+        "extra_result_paths": [],
+        "metadata": summary,
     }

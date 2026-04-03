@@ -144,3 +144,30 @@ class PipelineRunResponse(BaseModel):
     primary_result_path: Optional[str] = None
     extra_result_paths: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RecommendationResponse(BaseModel):
+    rows: int
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    records: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class TrainingArtifactsResponse(BaseModel):
+    directories: Dict[str, str] = Field(default_factory=dict)
+    feature_summary: Dict[str, Any] = Field(default_factory=dict)
+    customer_features: List[Dict[str, Any]] = Field(default_factory=list)
+    customer_features_metadata: Dict[str, Any] = Field(default_factory=dict)
+    churn_metrics: Dict[str, Any] = Field(default_factory=dict)
+    threshold_analysis: Dict[str, Any] = Field(default_factory=dict)
+    top_feature_importance: List[Dict[str, Any]] = Field(default_factory=list)
+    image_paths: Dict[str, Optional[str]] = Field(default_factory=dict)
+    model_paths: Dict[str, Optional[str]] = Field(default_factory=dict)
+
+
+class SavedResultsArtifactsResponse(BaseModel):
+    result_dir: str
+    uplift_summary: Dict[str, Any] = Field(default_factory=dict)
+    uplift_segmentation: List[Dict[str, Any]] = Field(default_factory=list)
+    optimization_summary: Dict[str, Any] = Field(default_factory=dict)
+    optimization_segment_budget: List[Dict[str, Any]] = Field(default_factory=list)
+    optimization_selected_customers: List[Dict[str, Any]] = Field(default_factory=list)

@@ -6,7 +6,7 @@ from typing import Any, Dict
 import pandas as pd
 import requests
 
-DEFAULT_TIMEOUT = 20
+DEFAULT_TIMEOUT = 120
 DEFAULT_API_BASE_URL = os.getenv('RETENTION_API_BASE_URL', 'http://localhost:8000').rstrip('/')
 
 
@@ -51,11 +51,51 @@ def fetch_uplift_top(limit: int) -> pd.DataFrame:
     return pd.DataFrame(data['records'])
 
 
-def fetch_budget_optimization(budget: int) -> tuple[Dict[str, Any], pd.DataFrame, pd.DataFrame]:
-    data = _request_json('/api/v1/analytics/optimization/budget', {'budget': budget})
+def fetch_budget_optimization(
+    budget: int,
+    threshold: float = 0.50,
+    max_customers: int | None = None,
+) -> tuple[Dict[str, Any], pd.DataFrame, pd.DataFrame]:
+    params: Dict[str, Any] = {'budget': budget, 'threshold': threshold}
+    if max_customers is not None:
+        params['max_customers'] = max_customers
+    data = _request_json('/api/v1/analytics/optimization/budget', params)
     return data['summary'], pd.DataFrame(data['selected_customers']), pd.DataFrame(data['segment_allocation'])
 
 
 def fetch_retention_targets(threshold: float, limit: int) -> pd.DataFrame:
     data = _request_json('/api/v1/analytics/retention-targets', {'threshold': threshold, 'limit': limit})
     return pd.DataFrame(data['records'])
+
+
+def fetch_personalized_recommendations(
+    limit: int,
+    per_customer: int,
+    budget: int,
+    threshold: float,
+    max_customers: int,
+    rebuild: bool = True,
+) -> tuple[Dict[str, Any], pd.DataFrame]:
+    data = _request_json(
+        '/api/v1/recommendations/personalized',
+        {
+            'limit': limit,
+            'per_customer': per_customer,
+            'budget': budget,
+            'threshold': threshold,
+            'max_customers': max_customers,
+            'rebuild': str(bool(rebuild)).lower(),
+        },
+    )
+    return data['summary'], pd.DataFrame(data['records'])
+
+
+def fetch_training_artifacts(rebuild: bool = False) -> Dict[str, Any]:
+    return _request_json('/api/v1/artifacts/training', {'rebuild': str(bool(rebuild)).lower()})
+
+
+def fetch_saved_results_artifacts(budget: int, rebuild: bool = False) -> Dict[str, Any]:
+    return _request_json(
+        '/api/v1/artifacts/saved-results',
+        {'budget': budget, 'rebuild': str(bool(rebuild)).lower()},
+    )

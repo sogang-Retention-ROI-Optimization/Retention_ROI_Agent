@@ -15,6 +15,7 @@ from src.workflows.pipeline_runner import (
     run_clv_prediction_pipeline,
     run_feature_engineering_pipeline,
     run_optimize_pipeline,
+    run_recommendation_pipeline,
     run_segmentation_priority_pipeline,
     run_uplift_pipeline,
 )
@@ -25,9 +26,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["features", "train", "uplift", "clv", "segment", "optimize", "abtest", "simulate"],
+        choices=["features", "train", "uplift", "clv", "segment", "optimize", "abtest", "simulate", "recommend"],
     )
     parser.add_argument("--budget", type=int, default=50000000)
+    parser.add_argument("--threshold", type=float, default=0.50)
+    parser.add_argument(
+        "--max-customers",
+        dest="max_customers",
+        type=int,
+        default=1000,
+        help="recommend 모드에서 최종 타겟팅 후보 상한을 지정합니다.",
+    )
     parser.add_argument("--data-dir", default="data/raw")
     parser.add_argument("--model-dir", default="models")
     parser.add_argument("--result-dir", default="results")
@@ -123,6 +132,15 @@ def main() -> int:
         result = run_ab_test_pipeline(
             data_dir,
             result_dir,
+            **common_simulation_kwargs,
+        )
+    elif args.mode == "recommend":
+        result = run_recommendation_pipeline(
+            data_dir,
+            result_dir,
+            budget=args.budget,
+            threshold=args.threshold,
+            max_customers=args.max_customers,
             **common_simulation_kwargs,
         )
     else:
