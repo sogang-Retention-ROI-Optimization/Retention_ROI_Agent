@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 import pandas as pd
+
+
+_DEFAULT_CATEGORIES = np.array(["fashion", "beauty", "electronics", "home", "grocery", "sports"], dtype=object)
+_DEFAULT_CATEGORY_PROBS = np.array([0.20, 0.16, 0.18, 0.18, 0.16, 0.12], dtype=float)
 
 
 def _random_times_for_day(
@@ -27,9 +33,14 @@ def build_orders(
     coupon_open_mask: np.ndarray,
     coupon_cost_lookup: np.ndarray,
     rng: np.random.Generator,
+    item_categories: Optional[np.ndarray] = None,
+    quantities: Optional[np.ndarray] = None,
+    order_times: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
     """
     Create one order row per purchase event.
+    Optional item_categories / quantities / order_times keep order rows aligned
+    with simulated event sessions when upstream logic provides them.
     """
     idx = np.flatnonzero(purchase_mask)
     if len(idx) == 0:
@@ -48,11 +59,17 @@ def build_orders(
         )
 
     customer_subset = customers.iloc[idx].reset_index(drop=True)
-    quantity = np.clip(
-        np.round(rng.normal(customer_subset["basket_size_preference"], 0.65)).astype(int),
-        1,
-        6,
-    )
+
+    if quantities is None:
+        quantity = np.clip(
+            np.round(rng.normal(customer_subset["basket_size_preference"], 0.65)).astype(int),
+            1,
+            6,
+        )
+    else:
+        quantity = np.asarray(quantities, dtype=int)
+        quantity = np.clip(quantity, 1, 6)
+
     gross = np.clip(
         rng.normal(customer_subset["avg_order_value_mean"], customer_subset["avg_order_value_std"]),
         15000,
@@ -62,12 +79,19 @@ def build_orders(
     discount_amount = coupon_used * coupon_cost_lookup[idx]
     net_amount = np.maximum(gross - discount_amount, 5000)
 
-    order_time = _random_times_for_day(date, len(idx), rng, start_hour=10, end_hour=22)
-    categories = rng.choice(
-        ["fashion", "beauty", "electronics", "home", "grocery", "sports"],
-        size=len(idx),
-        p=[0.20, 0.16, 0.18, 0.18, 0.16, 0.12],
-    )
+    if order_times is None:
+        order_time = _random_times_for_day(date, len(idx), rng, start_hour=10, end_hour=22)
+    else:
+        order_time = pd.Series(pd.to_datetime(order_times))
+
+    if item_categories is None:
+        categories = rng.choice(
+            _DEFAULT_CATEGORIES,
+            size=len(idx),
+            p=_DEFAULT_CATEGORY_PROBS,
+        )
+    else:
+        categories = np.asarray(item_categories, dtype=object)
 
     order_ids = [f"ORD-{day_idx:03d}-{order_sequence_start + i:07d}" for i in range(len(idx))]
 

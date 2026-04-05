@@ -67,6 +67,20 @@ def ensure_simulation_outputs(
     )
 
 
+
+
+def _latest_mtime(paths: list[Path]) -> float:
+    existing = [p.stat().st_mtime for p in paths if p.exists()]
+    return max(existing) if existing else -1.0
+
+
+def _needs_rebuild(targets: list[Path], dependencies: list[Path], force: bool = False) -> bool:
+    if force:
+        return True
+    if not targets or any(not p.exists() for p in targets):
+        return True
+    return _latest_mtime(targets) < _latest_mtime(dependencies)
+
 def load_customer_summary(
     data_dir: Path,
     force_simulation: bool = False,
@@ -239,9 +253,9 @@ def run_segmentation_priority_pipeline(
         random_seed=simulation_seed,
         randomize=randomize_simulation,
     )
-    if not (result_dir / "uplift_segmentation.csv").exists():
+    if _needs_rebuild([result_dir / 'uplift_segmentation.csv'], [data_dir / 'customer_summary.csv', data_dir / 'orders.csv'], force=force_simulation or randomize_simulation):
         run_uplift_pipeline(data_dir, result_dir)
-    if not (result_dir / "clv_predictions.csv").exists():
+    if _needs_rebuild([result_dir / 'clv_predictions.csv'], [data_dir / 'orders.csv', data_dir / 'customer_summary.csv'], force=force_simulation or randomize_simulation):
         run_clv_prediction_pipeline(data_dir, result_dir)
     artifacts = run_segmentation_pipeline(result_dir=result_dir, data_dir=data_dir)
     summary = json.loads(Path(artifacts.summary_path).read_text(encoding="utf-8"))
@@ -270,14 +284,17 @@ def run_optimize_pipeline(
         random_seed=simulation_seed,
         randomize=randomize_simulation,
     )
-    if not (result_dir / "uplift_segmentation.csv").exists():
+    if _needs_rebuild([result_dir / 'uplift_segmentation.csv'], [data_dir / 'customer_summary.csv', data_dir / 'orders.csv'], force=force_simulation or randomize_simulation):
         run_uplift_pipeline(data_dir, result_dir)
-    if not (result_dir / "clv_predictions.csv").exists():
+    if _needs_rebuild([result_dir / 'clv_predictions.csv'], [data_dir / 'orders.csv', data_dir / 'customer_summary.csv'], force=force_simulation or randomize_simulation):
         run_clv_prediction_pipeline(data_dir, result_dir)
-    if not (result_dir / "customer_segments.csv").exists():
-        run_segmentation_priority_pipeline(data_dir, result_dir)
+    if _needs_rebuild([result_dir / 'customer_segments.csv'], [result_dir / 'uplift_segmentation.csv', result_dir / 'clv_predictions.csv', data_dir / 'customer_summary.csv'], force=force_simulation or randomize_simulation):
+        run_segmentation_priority_pipeline(data_dir, result_dir, force_simulation=force_simulation, simulation_seed=simulation_seed, randomize_simulation=randomize_simulation)
 
-    artifacts = run_budget_optimization(result_dir=result_dir, budget=budget)
+    if _needs_rebuild([result_dir / 'optimization_selected_customers.csv', result_dir / 'optimization_summary.json'], [result_dir / 'customer_segments.csv'], force=force_simulation or randomize_simulation):
+        artifacts = run_budget_optimization(result_dir=result_dir, budget=budget)
+    else:
+        artifacts = run_budget_optimization(result_dir=result_dir, budget=budget)
     return {
         "mode": "optimize",
         "model_path": None,
@@ -302,7 +319,7 @@ def run_ab_test_pipeline(
         random_seed=simulation_seed,
         randomize=randomize_simulation,
     )
-    if not (result_dir / "uplift_segmentation.csv").exists():
+    if _needs_rebuild([result_dir / 'uplift_segmentation.csv'], [data_dir / 'customer_summary.csv', data_dir / 'orders.csv'], force=force_simulation or randomize_simulation):
         run_uplift_pipeline(data_dir, result_dir)
     artifacts = run_ab_test_analysis(result_dir=result_dir)
     metrics = json.loads(Path(artifacts.result_path).read_text(encoding="utf-8"))

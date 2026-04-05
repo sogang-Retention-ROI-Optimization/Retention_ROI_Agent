@@ -163,7 +163,7 @@ def _recent_interest_scores(events: pd.DataFrame) -> pd.DataFrame:
     if 'event_type' in recent_view.columns:
         recent_view['event_type'] = recent_view['event_type'].astype(str).str.lower()
         recent_view = recent_view[
-            recent_view['event_type'].isin({'view', 'browse', 'search', 'product_view', 'add_to_cart'})
+            recent_view['event_type'].isin({'view', 'browse', 'page_view', 'search', 'product_view', 'add_to_cart'})
         ].copy()
 
     if recent_view.empty:

@@ -37,11 +37,11 @@ class DashboardDataBundle:
 def _parse_date_columns(path: Path) -> List[str]:
     mapping = {
         RAW_CUSTOMER_SUMMARY: ["signup_date", "assigned_at"],
-        "customers.csv": ["signup_date", "assigned_at"],
-        "events.csv": ["event_time"],
+        "customers.csv": ["signup_date"],
+        "events.csv": ["timestamp"],
         "orders.csv": ["order_time"],
-        "campaign_exposures.csv": ["exposed_at"],
-        "state_snapshots.csv": ["snapshot_date"],
+        "campaign_exposures.csv": ["exposure_time"],
+        "state_snapshots.csv": ["snapshot_date", "last_visit_date", "last_purchase_date"],
         "treatment_assignments.csv": ["assigned_at"],
     }
     return mapping.get(path.name, [])

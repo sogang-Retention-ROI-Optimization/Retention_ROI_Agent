@@ -20,119 +20,88 @@ from .order_builder import build_orders
 from .state_tracker import StateTracker
 
 
-def _event_frame(
+_ITEM_CATEGORIES = np.array(["fashion", "beauty", "electronics", "home", "grocery", "sports"], dtype=object)
+_CATEGORY_PROBS = np.array([0.20, 0.16, 0.18, 0.18, 0.16, 0.12], dtype=float)
+
+
+def _empty_event_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "event_id",
+            "customer_id",
+            "timestamp",
+            "event_type",
+            "session_id",
+            "item_category",
+            "quantity",
+        ]
+    )
+
+
+def _sample_session_start_minutes(device_types: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    n = len(device_types)
+    if n == 0:
+        return np.array([], dtype=int)
+
+    hours = np.zeros(n, dtype=int)
+    mobile_mask = device_types == "mobile"
+    desktop_mask = device_types == "desktop"
+    tablet_mask = ~(mobile_mask | desktop_mask)
+
+    if mobile_mask.any():
+        mobile_probs = np.array(
+            [0.015, 0.012, 0.010, 0.010, 0.010, 0.012, 0.020, 0.028, 0.040, 0.050, 0.055, 0.060,
+             0.060, 0.055, 0.055, 0.060, 0.065, 0.075, 0.085, 0.085, 0.070, 0.055, 0.035, 0.021],
+            dtype=float,
+        )
+        mobile_probs = mobile_probs / mobile_probs.sum()
+        hours[mobile_mask] = rng.choice(np.arange(24), size=int(mobile_mask.sum()), p=mobile_probs)
+    if desktop_mask.any():
+        desktop_probs = np.array(
+            [0.004, 0.003, 0.002, 0.002, 0.002, 0.003, 0.010, 0.025, 0.055, 0.085, 0.095, 0.095,
+             0.090, 0.085, 0.080, 0.075, 0.070, 0.060, 0.050, 0.040, 0.030, 0.020, 0.012, 0.005],
+            dtype=float,
+        )
+        desktop_probs = desktop_probs / desktop_probs.sum()
+        hours[desktop_mask] = rng.choice(np.arange(24), size=int(desktop_mask.sum()), p=desktop_probs)
+    if tablet_mask.any():
+        tablet_probs = np.array(
+            [0.006, 0.005, 0.004, 0.004, 0.004, 0.006, 0.015, 0.028, 0.045, 0.060, 0.070, 0.075,
+             0.078, 0.075, 0.070, 0.068, 0.070, 0.075, 0.080, 0.076, 0.060, 0.040, 0.022, 0.009],
+            dtype=float,
+        )
+        tablet_probs = tablet_probs / tablet_probs.sum()
+        hours[tablet_mask] = rng.choice(np.arange(24), size=int(tablet_mask.sum()), p=tablet_probs)
+
+    minutes = rng.integers(0, 60, size=n)
+    return hours * 60 + minutes
+
+
+def _build_event_frame(
     customer_ids: np.ndarray,
+    timestamps: np.ndarray,
     event_type: str,
     session_ids: np.ndarray,
-    timestamps: np.ndarray,
+    rng: np.random.Generator,
     item_category: Optional[np.ndarray] = None,
     quantity: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
     n = len(customer_ids)
     if n == 0:
-        return pd.DataFrame(
-            columns=[
-                "event_id",
-                "customer_id",
-                "timestamp",
-                "event_type",
-                "session_id",
-                "item_category",
-                "quantity",
-            ]
-        )
+        return _empty_event_frame()
 
-    seed = pd.Series(session_ids).astype(str).str.replace("SES-", "", regex=False).fillna("0")
-    event_suffix = np.arange(1, n + 1, dtype=int)
+    seeds = rng.integers(10_000_000, 99_999_999, size=n)
     return pd.DataFrame(
         {
-            "event_id": [f"EVT-{event_type[:3].upper()}-{s}-{i:02d}" for s, i in zip(seed, event_suffix)],
+            "event_id": [f"EVT-{event_type[:3].upper()}-{int(x)}" for x in seeds],
             "customer_id": customer_ids.astype(int),
             "timestamp": pd.to_datetime(timestamps),
             "event_type": event_type,
-            "session_id": session_ids.astype(str),
+            "session_id": session_ids.astype(object),
             "item_category": item_category if item_category is not None else None,
             "quantity": quantity if quantity is not None else None,
         }
     )
-
-
-def _base_session_start_times(
-    customers: pd.DataFrame,
-    visit_mask: np.ndarray,
-    date: pd.Timestamp,
-    rng: np.random.Generator,
-) -> tuple[np.ndarray, np.ndarray]:
-    idx = np.flatnonzero(visit_mask)
-    if len(idx) == 0:
-        return np.array([], dtype=object), np.array([], dtype="datetime64[ns]")
-
-    visit_customers = customers.iloc[idx]
-    device = visit_customers["device_type"].to_numpy()
-    persona = visit_customers["persona"].to_numpy()
-
-    base_minutes = np.full(len(idx), 14 * 60, dtype=int)
-    base_minutes += np.where(device == "desktop", -150, 0)
-    base_minutes += np.where(device == "mobile", 45, 0)
-    base_minutes += np.where(device == "tablet", -20, 0)
-    base_minutes += np.where(persona == "new_signup", 25, 0)
-    base_minutes += np.where(persona == "vip_loyal", -10, 0)
-    base_minutes += np.where(persona == "churn_progressing", 70, 0)
-    base_minutes += np.where(date.weekday() >= 5, 60, -10)
-    base_minutes += rng.normal(0, 110, size=len(idx)).round().astype(int)
-
-    night_mask = (device == "mobile") & (rng.random(len(idx)) < 0.08)
-    base_minutes[night_mask] = rng.integers(0, 5 * 60, size=int(night_mask.sum()))
-
-    base_minutes = np.clip(base_minutes, 0, 23 * 60 + 50)
-    session_ids = np.array([f"SES-{int(x)}" for x in rng.integers(10_000_000, 99_999_999, size=len(idx))], dtype=object)
-    timestamps = pd.Timestamp(date.normalize()) + pd.to_timedelta(base_minutes, unit="m")
-    return session_ids, timestamps.to_numpy()
-
-
-def _session_lookup(customer_ids: np.ndarray, values: np.ndarray) -> dict[int, object]:
-    return {int(cid): values[i] for i, cid in enumerate(customer_ids.astype(int))}
-
-
-def _sample_page_view_counts(customers: pd.DataFrame, browse_mask: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    idx = np.flatnonzero(browse_mask)
-    if len(idx) == 0:
-        return np.array([], dtype=int)
-    browse_prob = customers.iloc[idx]["browse_prob_base"].to_numpy()
-    search_prob = customers.iloc[idx]["search_prob_base"].to_numpy()
-    mean_views = 1.4 + 3.2 * browse_prob + 1.1 * search_prob
-    counts = rng.poisson(np.clip(mean_views, 1.0, 6.0))
-    return np.clip(counts, 1, 9).astype(int)
-
-
-def _repeat_page_view_events(
-    customer_ids: np.ndarray,
-    session_ids: np.ndarray,
-    session_times: np.ndarray,
-    page_view_counts: np.ndarray,
-    rng: np.random.Generator,
-) -> pd.DataFrame:
-    if len(customer_ids) == 0:
-        return pd.DataFrame(columns=["event_id", "customer_id", "timestamp", "event_type", "session_id", "item_category", "quantity"])
-
-    records = []
-    for cid, sid, base_ts, n_views in zip(customer_ids.astype(int), session_ids.astype(str), pd.to_datetime(session_times), page_view_counts.astype(int)):
-        n_views = max(int(n_views), 1)
-        offsets = np.sort(rng.integers(1, 4 * n_views + 3, size=n_views))
-        for step, offset in enumerate(offsets, start=1):
-            ts = base_ts + pd.Timedelta(minutes=int(offset))
-            records.append(
-                {
-                    "event_id": f"EVT-PAG-{sid.replace('SES-', '')}-{step:02d}",
-                    "customer_id": cid,
-                    "timestamp": ts,
-                    "event_type": "page_view",
-                    "session_id": sid,
-                    "item_category": None,
-                    "quantity": None,
-                }
-            )
-    return pd.DataFrame.from_records(records)
 
 
 def simulate_events(
@@ -166,8 +135,6 @@ def simulate_events(
     dates = pd.date_range(config.start_date, config.end_date, freq="D")
     signup_dates = pd.to_datetime(sim["signup_date"]).to_numpy()
     assigned_at_days = (pd.to_datetime(sim["assigned_at"]) - pd.Timestamp(config.start_date)).dt.days.to_numpy()
-
-    customer_ids_all = sim["customer_id"].to_numpy().astype(int)
 
     for day_idx, date in enumerate(dates):
         tracker.start_day()
@@ -243,81 +210,163 @@ def simulate_events(
         )
         support_mask = visit_mask & (rng.random(len(sim)) < support_prob)
 
-        visit_customer_ids = customer_ids_all[visit_mask]
-        session_ids, session_start_times = _base_session_start_times(sim, visit_mask, date, rng)
-        session_id_map = _session_lookup(visit_customer_ids, session_ids)
-        session_time_map = _session_lookup(visit_customer_ids, session_start_times)
+        n_customers = len(sim)
+        session_ids = np.full(n_customers, None, dtype=object)
+        session_start = np.full(n_customers, np.datetime64("NaT"), dtype="datetime64[ns]")
+        session_category = np.full(n_customers, None, dtype=object)
+        session_quantity = np.zeros(n_customers, dtype=int)
+        pageview_counts = np.zeros(n_customers, dtype=int)
 
-        browse_customer_ids = customer_ids_all[browse_mask]
-        browse_session_ids = np.array([session_id_map[int(cid)] for cid in browse_customer_ids], dtype=object) if len(browse_customer_ids) else np.array([], dtype=object)
-        browse_session_times = np.array([session_time_map[int(cid)] for cid in browse_customer_ids], dtype="datetime64[ns]") if len(browse_customer_ids) else np.array([], dtype="datetime64[ns]")
-        page_view_counts = _sample_page_view_counts(sim, browse_mask, rng)
+        visit_idx = np.flatnonzero(visit_mask)
+        if len(visit_idx):
+            visit_customers = sim.iloc[visit_idx]
+            session_seed = rng.integers(10_000_000, 99_999_999, size=len(visit_idx))
+            session_ids[visit_idx] = np.array([f"SES-{int(x)}" for x in session_seed], dtype=object)
+            start_minutes = _sample_session_start_minutes(visit_customers["device_type"].to_numpy(), rng)
+            session_start[visit_idx] = (
+                pd.Timestamp(date.normalize()) + pd.to_timedelta(start_minutes, unit="m")
+            ).to_numpy(dtype="datetime64[ns]")
+            session_category[visit_idx] = rng.choice(_ITEM_CATEGORIES, size=len(visit_idx), p=_CATEGORY_PROBS)
+            sampled_qty = np.clip(
+                np.round(rng.normal(visit_customers["basket_size_preference"].to_numpy(), 0.60)).astype(int),
+                1,
+                6,
+            )
+            session_quantity[visit_idx] = sampled_qty
+            pageview_counts[visit_idx] = np.where(
+                browse_mask[visit_idx],
+                rng.integers(1, 5, size=len(visit_idx)),
+                0,
+            )
 
-        search_customer_ids = customer_ids_all[search_mask]
-        search_session_ids = np.array([session_id_map[int(cid)] for cid in search_customer_ids], dtype=object) if len(search_customer_ids) else np.array([], dtype=object)
-        search_times = np.array([session_time_map[int(cid)] for cid in search_customer_ids], dtype="datetime64[ns]") if len(search_customer_ids) else np.array([], dtype="datetime64[ns]")
-        if len(search_times):
-            search_times = pd.to_datetime(search_times) + pd.to_timedelta(rng.integers(1, 6, size=len(search_times)), unit="m")
+        event_frames.append(
+            _build_event_frame(
+                sim.loc[visit_mask, "customer_id"].to_numpy(),
+                session_start[visit_mask],
+                "visit",
+                session_ids[visit_mask],
+                rng,
+            )
+        )
 
-        add_customer_ids = customer_ids_all[add_to_cart_mask]
-        add_session_ids = np.array([session_id_map[int(cid)] for cid in add_customer_ids], dtype=object) if len(add_customer_ids) else np.array([], dtype=object)
-        add_times = np.array([session_time_map[int(cid)] for cid in add_customer_ids], dtype="datetime64[ns]") if len(add_customer_ids) else np.array([], dtype="datetime64[ns]")
-        if len(add_times):
-            add_times = pd.to_datetime(add_times) + pd.to_timedelta(rng.integers(2, 9, size=len(add_times)), unit="m")
+        browse_idx = np.flatnonzero(browse_mask)
+        if len(browse_idx):
+            counts = pageview_counts[browse_idx]
+            repeated_idx = np.repeat(browse_idx, counts)
+            offsets = np.repeat(np.cumsum(np.r_[0, counts[:-1]]), counts)
+            rank_in_session = np.arange(int(counts.sum())) - offsets
+            page_times = session_start[repeated_idx] + pd.to_timedelta(
+                1 + rank_in_session * 2 + rng.integers(0, 2, size=len(repeated_idx)),
+                unit="m",
+            )
+            event_frames.append(
+                _build_event_frame(
+                    sim.iloc[repeated_idx]["customer_id"].to_numpy(),
+                    page_times,
+                    "page_view",
+                    session_ids[repeated_idx],
+                    rng,
+                    item_category=session_category[repeated_idx],
+                )
+            )
+        else:
+            event_frames.append(_empty_event_frame())
 
-        remove_customer_ids = customer_ids_all[remove_cart_mask]
-        remove_session_ids = np.array([session_id_map[int(cid)] for cid in remove_customer_ids], dtype=object) if len(remove_customer_ids) else np.array([], dtype=object)
-        remove_times = np.array([session_time_map[int(cid)] for cid in remove_customer_ids], dtype="datetime64[ns]") if len(remove_customer_ids) else np.array([], dtype="datetime64[ns]")
-        if len(remove_times):
-            remove_times = pd.to_datetime(remove_times) + pd.to_timedelta(rng.integers(6, 16, size=len(remove_times)), unit="m")
+        def _offset_rows(mask: np.ndarray, event_type: str, min_minute: int, max_minute: int, include_category: bool = True, include_quantity: bool = False) -> None:
+            idx = np.flatnonzero(mask)
+            if len(idx) == 0:
+                event_frames.append(_empty_event_frame())
+                return
+            offsets = rng.integers(min_minute, max_minute + 1, size=len(idx))
+            timestamps = session_start[idx] + pd.to_timedelta(offsets, unit="m")
+            item_category = session_category[idx] if include_category else None
+            quantity = session_quantity[idx] if include_quantity else None
+            event_frames.append(
+                _build_event_frame(
+                    sim.iloc[idx]["customer_id"].to_numpy(),
+                    timestamps,
+                    event_type,
+                    session_ids[idx],
+                    rng,
+                    item_category=item_category,
+                    quantity=quantity,
+                )
+            )
 
-        support_customer_ids = customer_ids_all[support_mask]
-        support_session_ids = np.array([session_id_map[int(cid)] for cid in support_customer_ids], dtype=object) if len(support_customer_ids) else np.array([], dtype=object)
-        support_times = np.array([session_time_map[int(cid)] for cid in support_customer_ids], dtype="datetime64[ns]") if len(support_customer_ids) else np.array([], dtype="datetime64[ns]")
-        if len(support_times):
-            support_times = pd.to_datetime(support_times) + pd.to_timedelta(rng.integers(4, 12, size=len(support_times)), unit="m")
+        _offset_rows(search_mask, "search", 2, 10, include_category=True, include_quantity=False)
+        _offset_rows(add_to_cart_mask, "add_to_cart", 5, 16, include_category=True, include_quantity=True)
+        _offset_rows(remove_cart_mask, "remove_from_cart", 8, 24, include_category=True, include_quantity=True)
 
-        purchase_customer_ids = customer_ids_all[purchase_mask]
-        purchase_session_ids = np.array([session_id_map[int(cid)] for cid in purchase_customer_ids], dtype=object) if len(purchase_customer_ids) else np.array([], dtype=object)
-        purchase_times = np.array([session_time_map[int(cid)] for cid in purchase_customer_ids], dtype="datetime64[ns]") if len(purchase_customer_ids) else np.array([], dtype="datetime64[ns]")
-        if len(purchase_times):
-            purchase_times = pd.to_datetime(purchase_times) + pd.to_timedelta(rng.integers(4, 14, size=len(purchase_times)), unit="m")
+        # Coupon open can happen without a site visit. For non-visit opens, create a lightweight standalone session.
+        coupon_open_idx = np.flatnonzero(coupon_open_mask)
+        if len(coupon_open_idx):
+            standalone_mask = coupon_open_mask & ~visit_mask
+            standalone_idx = np.flatnonzero(standalone_mask)
+            if len(standalone_idx):
+                session_seed = rng.integers(10_000_000, 99_999_999, size=len(standalone_idx))
+                session_ids[standalone_idx] = np.array([f"SES-{int(x)}" for x in session_seed], dtype=object)
+                session_start[standalone_idx] = (
+                    pd.Timestamp(date.normalize()) + pd.to_timedelta(rng.integers(8 * 60, 23 * 60, size=len(standalone_idx)), unit="m")
+                ).to_numpy(dtype="datetime64[ns]")
+                session_category[standalone_idx] = rng.choice(_ITEM_CATEGORIES, size=len(standalone_idx), p=_CATEGORY_PROBS)
+                session_quantity[standalone_idx] = np.clip(
+                    np.round(rng.normal(sim.iloc[standalone_idx]["basket_size_preference"].to_numpy(), 0.60)).astype(int),
+                    1,
+                    6,
+                )
+            coupon_offsets = rng.integers(1, 12, size=len(coupon_open_idx))
+            coupon_times = session_start[coupon_open_idx] + pd.to_timedelta(coupon_offsets, unit="m")
+            event_frames.append(
+                _build_event_frame(
+                    sim.iloc[coupon_open_idx]["customer_id"].to_numpy(),
+                    coupon_times,
+                    "coupon_open",
+                    session_ids[coupon_open_idx],
+                    rng,
+                    item_category=session_category[coupon_open_idx],
+                )
+            )
+        else:
+            event_frames.append(_empty_event_frame())
 
-        coupon_open_customer_ids = customer_ids_all[coupon_open_mask]
-        open_session_ids = np.array([session_id_map.get(int(cid), f"SES-{int(x)}") for cid, x in zip(coupon_open_customer_ids, rng.integers(10_000_000, 99_999_999, size=len(coupon_open_customer_ids)))], dtype=object) if len(coupon_open_customer_ids) else np.array([], dtype=object)
-        open_base_times = []
-        for cid in coupon_open_customer_ids:
-            if int(cid) in session_time_map:
-                open_base_times.append(pd.Timestamp(session_time_map[int(cid)]))
-            else:
-                minute = int(rng.integers(8 * 60, 21 * 60))
-                open_base_times.append(pd.Timestamp(date.normalize()) + pd.Timedelta(minutes=minute))
-        open_times = np.array(open_base_times, dtype="datetime64[ns]")
-        if len(open_times):
-            open_times = pd.to_datetime(open_times) + pd.to_timedelta(rng.integers(0, 8, size=len(open_times)), unit="m")
+        _offset_rows(support_mask, "support_contact", 6, 25, include_category=False, include_quantity=False)
 
-        coupon_redeem_customer_ids = customer_ids_all[coupon_redeem_mask]
-        redeem_session_ids = np.array([session_id_map.get(int(cid), f"SES-{int(x)}") for cid, x in zip(coupon_redeem_customer_ids, rng.integers(10_000_000, 99_999_999, size=len(coupon_redeem_customer_ids)))], dtype=object) if len(coupon_redeem_customer_ids) else np.array([], dtype=object)
-        redeem_base_times = []
-        for cid in coupon_redeem_customer_ids:
-            if int(cid) in session_time_map:
-                redeem_base_times.append(pd.Timestamp(session_time_map[int(cid)]))
-            else:
-                minute = int(rng.integers(8 * 60, 21 * 60))
-                redeem_base_times.append(pd.Timestamp(date.normalize()) + pd.Timedelta(minutes=minute))
-        redeem_times = np.array(redeem_base_times, dtype="datetime64[ns]")
-        if len(redeem_times):
-            redeem_times = pd.to_datetime(redeem_times) + pd.to_timedelta(rng.integers(5, 16, size=len(redeem_times)), unit="m")
+        purchase_idx = np.flatnonzero(purchase_mask)
+        purchase_times = np.array([], dtype="datetime64[ns]")
+        if len(purchase_idx):
+            purchase_offsets = rng.integers(10, 28, size=len(purchase_idx))
+            purchase_times = session_start[purchase_idx] + pd.to_timedelta(purchase_offsets, unit="m")
+            event_frames.append(
+                _build_event_frame(
+                    sim.iloc[purchase_idx]["customer_id"].to_numpy(),
+                    purchase_times,
+                    "purchase",
+                    session_ids[purchase_idx],
+                    rng,
+                    item_category=session_category[purchase_idx],
+                    quantity=session_quantity[purchase_idx],
+                )
+            )
+        else:
+            event_frames.append(_empty_event_frame())
 
-        event_frames.append(_event_frame(visit_customer_ids, "visit", session_ids, session_start_times))
-        event_frames.append(_repeat_page_view_events(browse_customer_ids, browse_session_ids, browse_session_times, page_view_counts, rng))
-        event_frames.append(_event_frame(search_customer_ids, "search", search_session_ids, search_times))
-        event_frames.append(_event_frame(add_customer_ids, "add_to_cart", add_session_ids, add_times))
-        event_frames.append(_event_frame(remove_customer_ids, "remove_from_cart", remove_session_ids, remove_times))
-        event_frames.append(_event_frame(coupon_open_customer_ids, "coupon_open", open_session_ids, open_times))
-        event_frames.append(_event_frame(coupon_redeem_customer_ids, "coupon_redeem", redeem_session_ids, redeem_times))
-        event_frames.append(_event_frame(support_customer_ids, "support_contact", support_session_ids, support_times))
-        event_frames.append(_event_frame(purchase_customer_ids, "purchase", purchase_session_ids, purchase_times))
+        if len(purchase_idx):
+            redeem_offsets = rng.integers(11, 30, size=int(coupon_redeem_mask[purchase_idx].sum()))
+            redeem_idx = purchase_idx[coupon_redeem_mask[purchase_idx]]
+            redeem_times = session_start[redeem_idx] + pd.to_timedelta(redeem_offsets, unit="m")
+            event_frames.append(
+                _build_event_frame(
+                    sim.iloc[redeem_idx]["customer_id"].to_numpy(),
+                    redeem_times,
+                    "coupon_redeem",
+                    session_ids[redeem_idx],
+                    rng,
+                    item_category=session_category[redeem_idx],
+                    quantity=session_quantity[redeem_idx],
+                )
+            )
+        else:
+            event_frames.append(_empty_event_frame())
 
         orders = build_orders(
             customers=sim,
@@ -328,20 +377,19 @@ def simulate_events(
             coupon_open_mask=coupon_redeem_mask,
             coupon_cost_lookup=coupon_cost_lookup,
             rng=rng,
+            item_categories=session_category[purchase_mask] if purchase_mask.any() else None,
+            quantities=session_quantity[purchase_mask] if purchase_mask.any() else None,
+            order_times=purchase_times if len(purchase_idx) else None,
         )
         if not orders.empty:
-            purchase_time_lookup = {int(cid): ts for cid, ts in zip(purchase_customer_ids, pd.to_datetime(purchase_times))}
-            if "customer_id" in orders.columns:
-                orders["order_time"] = orders["customer_id"].map(purchase_time_lookup).fillna(pd.Timestamp(date.normalize()) + pd.Timedelta(hours=12))
             order_seq += len(orders)
             order_frames.append(orders)
             amount_lookup = orders.set_index("customer_id")["net_amount"].to_dict()
             order_amounts = np.zeros(len(sim), dtype=float)
             purchase_idx = np.flatnonzero(purchase_mask)
-            if len(purchase_idx):
-                purchase_customer_ids_for_amount = customer_ids_all[purchase_idx]
-                for arr_idx, cid in zip(purchase_idx, purchase_customer_ids_for_amount):
-                    order_amounts[arr_idx] = amount_lookup.get(int(cid), 0.0)
+            for idx in purchase_idx:
+                cid = int(sim.iloc[idx]["customer_id"])
+                order_amounts[idx] = amount_lookup.get(cid, 0.0)
             tracker.record_purchase(purchase_mask, order_amounts, day_idx)
 
         if (day_idx % config.snapshot_frequency_days == 0) or (day_idx == len(dates) - 1):
