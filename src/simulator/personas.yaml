@@ -32,37 +32,37 @@ personas:
     recovery_prob: 0.44
     acquisition_weight: 0.24
   price_sensitive:
-    visit_prob: 0.24
-    browse_prob: 0.70
-    search_prob: 0.40
-    add_to_cart_prob: 0.29
-    remove_from_cart_prob: 0.14
-    purchase_given_cart_prob: 0.41
-    purchase_given_visit_prob: 0.05
-    coupon_open_prob: 0.58
-    coupon_redeem_prob: 0.39
-    avg_order_mean: 70000
-    avg_order_std: 18000
-    churn_sensitivity: 1.00
-    price_sensitivity: 0.83
-    recovery_prob: 0.34
-    acquisition_weight: 0.20
+    visit_prob: 0.14
+    browse_prob: 0.90
+    search_prob: 0.85
+    add_to_cart_prob: 0.15
+    remove_from_cart_prob: 0.12
+    purchase_given_cart_prob: 0.13
+    purchase_given_visit_prob: 0.02
+    coupon_open_prob: 0.85
+    coupon_redeem_prob: 0.95
+    avg_order_mean: 25000
+    avg_order_std: 6000
+    churn_sensitivity: 1.10
+    price_sensitivity: 0.95
+    recovery_prob: 0.40
+    acquisition_weight: 0.30
   explorer:
-    visit_prob: 0.28
-    browse_prob: 0.83
-    search_prob: 0.48
-    add_to_cart_prob: 0.18
-    remove_from_cart_prob: 0.16
-    purchase_given_cart_prob: 0.22
-    purchase_given_visit_prob: 0.03
-    coupon_open_prob: 0.26
+    visit_prob: 0.33
+    browse_prob: 0.95
+    search_prob: 0.70
+    add_to_cart_prob: 0.03
+    remove_from_cart_prob: 0.01
+    purchase_given_cart_prob: 0.16
+    purchase_given_visit_prob: 0.005
+    coupon_open_prob: 0.15
     coupon_redeem_prob: 0.10
-    avg_order_mean: 60000
-    avg_order_std: 16000
-    churn_sensitivity: 0.95
-    price_sensitivity: 0.50
-    recovery_prob: 0.26
-    acquisition_weight: 0.18
+    avg_order_mean: 15000
+    avg_order_std: 4000
+    churn_sensitivity: 1.30
+    price_sensitivity: 0.20
+    recovery_prob: 0.15
+    acquisition_weight: 0.20
   churn_progressing:
     visit_prob: 0.17
     browse_prob: 0.61
@@ -126,15 +126,15 @@ persona_to_uplift_weights:
     lost_cause: 0.20
     sleeping_dog: 0.10
   price_sensitive:
-    persuadable: 0.55
-    sure_thing: 0.15
-    lost_cause: 0.20
-    sleeping_dog: 0.10
+    persuadable: 0.75
+    sure_thing: 0.05
+    lost_cause: 0.15
+    sleeping_dog: 0.05
   explorer:
-    persuadable: 0.20
-    sure_thing: 0.08
-    lost_cause: 0.52
-    sleeping_dog: 0.20
+    persuadable: 0.05
+    sure_thing: 0.02
+    lost_cause: 0.85
+    sleeping_dog: 0.08
   churn_progressing:
     persuadable: 0.38
     sure_thing: 0.05
