@@ -20,8 +20,8 @@ from .order_builder import build_orders
 from .state_tracker import StateTracker
 
 
-_ITEM_CATEGORIES = np.array(["fashion", "beauty", "electronics", "home", "grocery", "sports"], dtype=object)
-_CATEGORY_PROBS = np.array([0.20, 0.16, 0.18, 0.18, 0.16, 0.12], dtype=float)
+_ITEM_CATEGORIES = np.array(["fashion", "beauty", "personal_care", "grocery", "sports", "health"], dtype=object)
+_CATEGORY_PROBS = np.array([0.20, 0.18, 0.18, 0.16, 0.14, 0.14], dtype=float)
 
 
 def _empty_event_frame() -> pd.DataFrame:

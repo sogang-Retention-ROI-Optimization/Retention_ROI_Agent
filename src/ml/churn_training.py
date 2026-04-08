@@ -329,6 +329,7 @@ def train_churn_models(
                 max_depth=4,
                 subsample=0.85,
                 colsample_bytree=0.85,
+                reg_lambda=5,  # Increase regularization to reduce overfitting
                 eval_metric="logloss",
                 n_jobs=4,
             ),

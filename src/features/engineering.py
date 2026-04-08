@@ -388,15 +388,21 @@ def build_feature_dataset(data_dir: str | Path, feature_store_dir: str | Path = 
     base['monetary_per_visit_90d'] = safe_divide(base['monetary_90d'], base['visits_90d'].replace(0, np.nan), default=0.0)
     base['support_contact_rate_30d'] = safe_divide(base['support_contact_30d'], base['sessions_30d'].replace(0, np.nan), default=0.0)
     base['label'] = _compute_future_label(events, orders, snapshots, base['customer_id'], as_of_date, horizon_days)
+    # Remove strict active filter to allow higher churn rate
+    # active_cohort = base['active_days_30d'] > 0
+    # base = base.loc[active_cohort].reset_index(drop=True)
     base, clipping_summary = _winsorize_and_impute(base)
+    positive_rate = float(base['label'].mean())
+    print(f'Churn rate: {positive_rate * 100:.2f}%')
     metadata = {
         'as_of_date': str(as_of_date.date()),
         'horizon_days': horizon_days,
         'row_count': int(len(base)),
-        'positive_rate': float(base['label'].mean()),
+        'positive_rate': positive_rate,
         'feature_count': int(len([c for c in base.columns if c not in {'customer_id', 'label'}])),
         'feature_dictionary': feature_dictionary(),
         'clipping_summary': clipping_summary,
+        'cohort_filter': 'none',
         'missing_value_strategy': 'numeric=median, categorical=unknown, outlier=1st/99th percentile clipping',
     }
     store = FileFeatureStore(feature_store_dir)
