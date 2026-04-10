@@ -48,6 +48,39 @@ from dashboard.services.uplift_service import (
 from dashboard.utils.formatters import money, pct
 
 
+DASHBOARD_VIEW_ITEMS: tuple[tuple[str, str], ...] = (
+    ("1", "이탈현황"),
+    ("2", "코호트 리텐션 곡선"),
+    ("3", "Uplift + CLV 상위 고객"),
+    ("4", "예산 배분 결과"),
+    ("5", "예상 최적화 ROI"),
+    ("6", "리텐션 대상 고객 목록"),
+    ("7", "학습 결과 아티팩트"),
+    ("8", "Uplift/최적화 결과 (실시간)"),
+    ("9", "개인화 추천"),
+    ("10", "실시간 이탈 위험 스코어링"),
+    ("11", "이탈 시점 예측 (Survival Analysis)"),
+)
+
+DASHBOARD_VIEW_OPTIONS: tuple[str, ...] = tuple(f"{n}. {t}" for n, t in DASHBOARD_VIEW_ITEMS)
+
+
+def _circled_num(n: str) -> str:
+    try:
+        i = int(n)
+        if 1 <= i <= 20:
+            return chr(0x245F + i)  # ① = 0x2460
+    except Exception:
+        pass
+    return f"{n}."
+
+
+def _view_title_from_option(option: str) -> str:
+    for num, title in DASHBOARD_VIEW_ITEMS:
+        if f"{num}. {title}" == option:
+            return f"{_circled_num(num)}  {title}"
+    return option
+
 st.set_page_config(
     page_title="Retention ROI Dashboard",
     page_icon="📊",
@@ -109,6 +142,60 @@ def inject_custom_css():
             font-weight: 600;
         }
 
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] > label {
+            color: #e5eefc !important;
+            font-weight: 700 !important;
+            font-size: 1.2rem !important;
+            margin-bottom: 4px !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] {
+            gap: 0 !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label {
+            display: flex !important;
+            align-items: center !important;
+            padding: 3px 6px !important;
+            margin: 0 !important;
+            border: none !important;
+            background: transparent !important;
+            border-radius: 4px !important;
+            box-shadow: none !important;
+            cursor: pointer !important;
+            transition: background 0.15s ease, color 0.15s ease !important;
+            width: 100% !important;
+        }
+        /* 라벨 텍스트: 번호(①..⑪)가 또렷하게 보이도록 크기/굵기 확보 */
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label p,
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label div {
+            color: #e5eefc !important;
+            font-size: 1rem !important;
+            font-weight: 500 !important;
+            line-height: 1.25 !important;
+            margin: 0 !important;
+            white-space: normal !important;
+            word-break: keep-all !important;
+        }
+        /* hover: 배경색만 은은하게 변경, 크기/위치 변화 없음 */
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label:hover {
+            background: rgba(37,99,235,0.22) !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label:hover p,
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label:hover div {
+            color: #ffffff !important;
+        }
+        /* 선택됨: 해당 항목의 input이 checked 상태인 label을 찾아 진하게 표시 */
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label:has(input:checked) {
+            background: rgba(37,99,235,0.42) !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label:has(input:checked) p,
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label:has(input:checked) div {
+            color: #ffffff !important;
+            font-weight: 700 !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stRadio"] [role="radiogroup"] > label:has(input:checked):hover {
+            background: rgba(37,99,235,0.55) !important;
+        }
+        
         /* radio / toggle / slider 글자 고정 */
         section[data-testid="stSidebar"] .stRadio label,
         section[data-testid="stSidebar"] .stRadio label p,
@@ -937,21 +1024,17 @@ elif bundle.source_dir:
 with st.sidebar:
     st.header("제어 패널")
 
+    if "dashboard_view" not in st.session_state:
+        st.session_state.dashboard_view = DASHBOARD_VIEW_OPTIONS[0]
+    elif st.session_state.dashboard_view not in DASHBOARD_VIEW_OPTIONS:
+        st.session_state.dashboard_view = DASHBOARD_VIEW_OPTIONS[0]
+
     view = st.radio(
         "조회 항목 선택",
-        [
-            "1. 이탈현황",
-            "2. 코호트 리텐션 곡선",
-            "3. Uplift + CLV 상위 고객",
-            "4. 예산 배분 결과",
-            "5. 예상 최적화 ROI",
-            "6. 리텐션 대상 고객 목록",
-            "7. 학습 결과 아티팩트",
-            "8. Uplift/최적화 결과 (실시간)",
-            "9. 개인화 추천",
-            "10. 실시간 이탈 위험 스코어링",
-            "11. 이탈 시점 예측 (Survival Analysis)",
-        ],
+        options=list(DASHBOARD_VIEW_OPTIONS),
+        format_func=_view_title_from_option,
+        key="dashboard_view",
+        label_visibility="visible",
     )
 
     threshold = 0.50
