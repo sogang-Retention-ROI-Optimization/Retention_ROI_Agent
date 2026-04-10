@@ -1,5 +1,4 @@
 personas:
-personas:
   vip_loyal:
     visit_prob: 0.35
     browse_prob: 0.78
@@ -8,15 +7,6 @@ personas:
     remove_from_cart_prob: 0.06
     purchase_given_cart_prob: 0.65
     purchase_given_visit_prob: 0.12
-<<<<<<< HEAD
-    coupon_open_prob: 0.15
-    coupon_redeem_prob: 0.08
-    avg_order_mean: 145000
-    avg_order_std: 25000
-    churn_sensitivity: 0.45
-    price_sensitivity: 0.22
-    recovery_prob: 0.60
-=======
     coupon_open_prob: 0.12
     coupon_redeem_prob: 0.05
     avg_order_mean: 145000
@@ -24,7 +14,6 @@ personas:
     churn_sensitivity: 0.35
     price_sensitivity: 0.18
     recovery_prob: 0.65
->>>>>>> origin/master
     acquisition_weight: 0.12
   regular_loyal:
     visit_prob: 0.25
@@ -34,25 +23,14 @@ personas:
     remove_from_cart_prob: 0.10
     purchase_given_cart_prob: 0.52
     purchase_given_visit_prob: 0.07
-<<<<<<< HEAD
-    coupon_open_prob: 0.28
-    coupon_redeem_prob: 0.19
-    avg_order_mean: 88000
-    avg_order_std: 20000
-    churn_sensitivity: 0.65
-=======
     coupon_open_prob: 0.32
     coupon_redeem_prob: 0.22
     avg_order_mean: 88000
     avg_order_std: 20000
     churn_sensitivity: 0.60
->>>>>>> origin/master
     price_sensitivity: 0.35
     recovery_prob: 0.44
     acquisition_weight: 0.24
-# vip_loyal — 쿠폰 반응을 낮추고(coupon_open 0.20→0.15, redeem 0.12→0.08), 구매력을 높이고(purchase_given_cart 0.58→0.65), 이탈 민감도를 낮춤(churn_sensitivity 0.60→0.45). 쿠폰 없어도 알아서 사는 VIP"를 더 뚜렷하게 만든 거야.
-# regular_loyal — VIP와 차별화하되 여전히 안정적인 구매. 쿠폰 반응을 약간 올려서(coupon_open 0.24→0.28) Persuadable 여지를 주고, 이탈 민감도는 낮춤(churn_sensitivity 0.75→0.65).
-
   price_sensitive:
     visit_prob: 0.14
     browse_prob: 0.90
@@ -116,13 +94,8 @@ personas:
     churn_sensitivity: 1.25
     price_sensitivity: 0.72
     recovery_prob: 0.22
-<<<<<<< HEAD
-    acquisition_weight: 0.35
-
-=======
     acquisition_weight: 0.08
 # uplift_segments 값을 더 극단적으로 조정
->>>>>>> origin/master
 uplift_segments:
   persuadable:
     treatment_lift: 0.65
@@ -153,15 +126,9 @@ persona_to_uplift_weights:
     lost_cause: 0.15
     sleeping_dog: 0.10
   price_sensitive:
-<<<<<<< HEAD
-    persuadable: 0.75
-    sure_thing: 0.05
-    lost_cause: 0.15
-=======
     persuadable: 0.80
     sure_thing: 0.03
     lost_cause: 0.12
->>>>>>> origin/master
     sleeping_dog: 0.05
   explorer:
     persuadable: 0.05
