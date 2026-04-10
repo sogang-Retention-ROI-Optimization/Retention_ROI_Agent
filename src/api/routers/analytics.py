@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 import pandas as pd
 
-from src.api.dependencies import get_repository
+from src.api.dependencies import get_repository, get_settings
 from src.api.schemas import (
     BudgetResponse,
     ChurnResponse,
@@ -24,6 +24,8 @@ from src.api.services.analytics import (
 )
 from src.api.services.repository import DataRepository
 from src.api.services.serialization import dataframe_to_records
+from src.api.settings import ApiSettings
+from src.optimization.timing import load_survival_predictions
 
 router = APIRouter(prefix='/analytics', tags=['analytics'])
 
@@ -31,6 +33,68 @@ ALLOWED_SORT_COLUMNS = {
     'customer_id', 'churn_probability', 'uplift_score', 'clv', 'expected_roi',
     'expected_incremental_profit', 'recency_days', 'frequency', 'monetary',
 }
+
+
+_TRUE_VALUES = {'true', '1', 'yes', 'y', 't'}
+_FALSE_VALUES = {'false', '0', 'no', 'n', 'f'}
+
+
+def _coerce_bool_series(series: pd.Series, default: bool = True) -> pd.Series:
+    if series.empty:
+        return pd.Series(dtype=bool)
+
+    def _parse(value):
+        if pd.isna(value):
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(int(value))
+        text = str(value).strip().lower()
+        if text in _TRUE_VALUES:
+            return True
+        if text in _FALSE_VALUES:
+            return False
+        return default
+
+    return series.map(_parse).astype(bool)
+
+
+def _filter_cohort_retention(
+    cohort: pd.DataFrame,
+    activity_definition: Optional[str] = None,
+    retention_mode: Optional[str] = None,
+) -> pd.DataFrame:
+    df = cohort.copy()
+    if df.empty:
+        return df
+
+    if 'activity_definition' in df.columns and activity_definition:
+        candidate = df[df['activity_definition'].astype(str) == activity_definition].copy()
+        if not candidate.empty:
+            df = candidate
+    elif 'activity_definition' in df.columns:
+        for preferred in ['core_engagement', 'all_activity']:
+            candidate = df[df['activity_definition'].astype(str) == preferred].copy()
+            if not candidate.empty:
+                df = candidate
+                break
+
+    if 'retention_mode' in df.columns and retention_mode:
+        candidate = df[df['retention_mode'].astype(str) == retention_mode].copy()
+        if not candidate.empty:
+            df = candidate
+    elif 'retention_mode' in df.columns:
+        for preferred in ['rolling', 'point']:
+            candidate = df[df['retention_mode'].astype(str) == preferred].copy()
+            if not candidate.empty:
+                df = candidate
+                break
+
+    if 'observed' in df.columns:
+        df['observed'] = _coerce_bool_series(df['observed'], default=True)
+
+    return df.reset_index(drop=True)
 
 
 def _load_customer_summary(repository: DataRepository) -> pd.DataFrame:
@@ -53,11 +117,18 @@ def dashboard_summary(
     budget: int = Query(default=5000000, ge=1),
     max_customers: Optional[int] = Query(default=None, ge=1, le=5000),
     repository: DataRepository = Depends(get_repository),
+    settings: ApiSettings = Depends(get_settings),
 ) -> DashboardSummaryResponse:
     customers = _load_customer_summary(repository)
     cohort = _load_cohort_retention(repository)
     churn_summary, _ = get_churn_status(customers, threshold=threshold)
-    _, budget_summary, _ = get_budget_result(customers, budget=budget, threshold=threshold, max_customers=max_customers)
+    _, budget_summary, _ = get_budget_result(
+        customers,
+        budget=budget,
+        threshold=threshold,
+        max_customers=max_customers,
+        survival_predictions=load_survival_predictions(settings.resolved_result_dir),
+    )
     persona_distribution = dataframe_to_records(distribution_table(customers, 'persona'))
     uplift_segment_distribution = dataframe_to_records(distribution_table(customers, 'uplift_segment'))
     return DashboardSummaryResponse(
@@ -115,8 +186,16 @@ def churn_view(
 
 
 @router.get('/cohort-retention', response_model=CohortRetentionResponse)
-def cohort_retention(repository: DataRepository = Depends(get_repository)) -> CohortRetentionResponse:
-    cohort = _load_cohort_retention(repository)
+def cohort_retention(
+    activity_definition: Optional[str] = Query(default=None),
+    retention_mode: Optional[str] = Query(default=None),
+    repository: DataRepository = Depends(get_repository),
+) -> CohortRetentionResponse:
+    cohort = _filter_cohort_retention(
+        _load_cohort_retention(repository),
+        activity_definition=activity_definition,
+        retention_mode=retention_mode,
+    )
     keep_cols = [
         'cohort_month',
         'period',
@@ -126,7 +205,7 @@ def cohort_retention(repository: DataRepository = Depends(get_repository)) -> Co
         'observed',
     ]
     records = dataframe_to_records(cohort, columns=keep_cols)
-    observed = cohort[cohort.get('observed', True) == True] if not cohort.empty and 'observed' in cohort.columns else cohort
+    observed = cohort[cohort['observed']] if not cohort.empty and 'observed' in cohort.columns else cohort
     periods = int(observed['period'].max()) + 1 if not observed.empty else 0
     return CohortRetentionResponse(periods=periods, records=records)
 
@@ -164,6 +243,7 @@ def budget_optimization(
     threshold: float = Query(default=0.50, ge=0.0, le=1.0),
     max_customers: Optional[int] = Query(default=None, ge=1, le=5000),
     repository: DataRepository = Depends(get_repository),
+    settings: ApiSettings = Depends(get_settings),
 ) -> BudgetResponse:
     customers = _load_customer_summary(repository)
     selected, summary, segment_allocation = get_budget_result(
@@ -171,6 +251,7 @@ def budget_optimization(
         budget=budget,
         threshold=threshold,
         max_customers=max_customers,
+        survival_predictions=load_survival_predictions(settings.resolved_result_dir),
     )
     return BudgetResponse(
         budget=int(budget),

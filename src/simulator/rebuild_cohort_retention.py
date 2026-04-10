@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from .cohort_analysis import build_cohort_retention
+from .cohort_analysis import build_all_cohort_retention
 from .config import DEFAULT_CONFIG
 
 
 def rebuild_cohort_retention(
     data_dir: str = "data/raw",
-    periods: int = 7,
+    periods: int = 13,
     end_date: str | None = None,
 ) -> Path:
     data_path = Path(data_dir)
@@ -21,7 +21,7 @@ def rebuild_cohort_retention(
     customers = pd.read_csv(customers_path)
     events = pd.read_csv(events_path)
 
-    cohort_retention = build_cohort_retention(
+    cohort_retention = build_all_cohort_retention(
         customers=customers,
         events=events,
         periods=periods,
