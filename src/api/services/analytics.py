@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.optimization.timing import apply_survival_timing, load_survival_predictions
+from src.optimization.policy import build_intensity_action_candidates, normalize, safe_numeric
+from src.optimization.timing import load_survival_predictions
 
 DEFAULT_CUSTOMER_COLUMNS = [
     'customer_id', 'persona', 'uplift_segment_true', 'acquisition_month', 'recency_days', 'frequency', 'monetary',
@@ -94,21 +95,6 @@ def _segment_order(customers: pd.DataFrame) -> List[str]:
     return ordered + remaining
 
 
-def _safe_series(df: pd.DataFrame, column: str, default: float = 0.0) -> pd.Series:
-    if column not in df.columns:
-        return pd.Series([default] * len(df), index=df.index, dtype=float)
-    return pd.to_numeric(df[column], errors='coerce').fillna(default)
-
-
-def _normalize(series: pd.Series) -> pd.Series:
-    if series.empty:
-        return series.astype(float)
-    series = pd.to_numeric(series, errors='coerce').fillna(0.0)
-    low = float(series.min())
-    high = float(series.max())
-    if high - low < 1e-12:
-        return pd.Series([0.0] * len(series), index=series.index, dtype=float)
-    return (series - low) / (high - low)
 
 
 def _build_candidate_pool(
@@ -120,64 +106,62 @@ def _build_candidate_pool(
         return customers.head(0).copy()
 
     df = customers.copy()
-    df['churn_probability'] = _safe_series(df, 'churn_probability')
-    df['uplift_score'] = _safe_series(df, 'uplift_score')
-    df['clv'] = _safe_series(df, 'clv')
-    df['coupon_cost'] = _safe_series(df, 'coupon_cost')
-    df['base_expected_incremental_profit'] = _safe_series(df, 'expected_incremental_profit')
-    df['base_expected_roi'] = _safe_series(df, 'expected_roi')
-    df = apply_survival_timing(df, survival_predictions=survival_predictions)
+    df["churn_probability"] = safe_numeric(df.get("churn_probability"), default=0.0)
+    df["uplift_score"] = safe_numeric(df.get("uplift_score"), default=0.0)
+    df["clv"] = safe_numeric(df.get("clv"), default=0.0)
+    df["coupon_cost"] = safe_numeric(df.get("coupon_cost"), default=0.0)
+    df["expected_incremental_profit"] = safe_numeric(df.get("expected_incremental_profit"), default=0.0)
+    df["expected_roi"] = safe_numeric(df.get("expected_roi"), default=0.0)
 
-    df['timing_adjusted_incremental_profit'] = (
-        df['base_expected_incremental_profit'] * _safe_series(df, 'churn_timing_weight', default=1.0)
-    )
-    # `expected_incremental_profit` in the customer summary is already a net-profit value,
-    # so timing adjustment should rescale that profit directly instead of subtracting coupon
-    # cost a second time. The previous implementation double-counted cost and depressed ROI.
-    df['timing_adjusted_roi'] = df['timing_adjusted_incremental_profit'] / df['coupon_cost'].where(
-        df['coupon_cost'] > 0,
+    candidate = build_intensity_action_candidates(df, survival_predictions=survival_predictions)
+    candidate["optimization_score"] = candidate["expected_incremental_profit"] / candidate["coupon_cost"].where(
+        candidate["coupon_cost"] > 0,
         1.0,
     )
-    df['expected_incremental_profit'] = df['timing_adjusted_incremental_profit']
-    df['expected_roi'] = df['timing_adjusted_roi']
-
-    candidate = df[
-        (df['churn_probability'] >= float(threshold))
-        & (df['uplift_score'] > 0.0)
-        & (df['expected_incremental_profit'] > 0.0)
-        & (df['coupon_cost'] > 0.0)
+    candidate = candidate[
+        (candidate["churn_probability"] >= float(threshold))
+        & (candidate["uplift_score"] > 0.0)
+        & (candidate["expected_incremental_profit"] > 0.0)
+        & (candidate["coupon_cost"] > 0.0)
     ].copy()
 
     if candidate.empty:
         return candidate
 
-    candidate['roi_rank_score'] = _normalize(candidate['expected_roi'])
-    candidate['profit_rank_score'] = _normalize(candidate['expected_incremental_profit'])
-    candidate['clv_rank_score'] = _normalize(candidate['clv'])
-    candidate['timing_rank_score'] = _normalize(candidate['timing_urgency_score'])
-    candidate['window_rank_score'] = 1.0 - _normalize(candidate['intervention_window_days'])
+    candidate["roi_rank_score"] = normalize(candidate["expected_roi"])
+    candidate["profit_rank_score"] = normalize(candidate["expected_incremental_profit"])
+    candidate["clv_rank_score"] = normalize(safe_numeric(candidate.get("clv"), default=0.0))
+    candidate["timing_rank_score"] = normalize(candidate["timing_urgency_score"])
+    candidate["window_rank_score"] = 1.0 - normalize(candidate["intervention_window_days"])
+    candidate["intensity_fit_rank_score"] = normalize(candidate["intensity_effect_multiplier"])
+    candidate["optimization_rank_score"] = normalize(candidate["optimization_score"])
 
-    candidate['priority_score'] = (
-        0.20 * candidate['roi_rank_score']
-        + 0.20 * candidate['profit_rank_score']
-        + 0.15 * candidate['churn_probability']
-        + 0.10 * candidate['uplift_score']
-        + 0.10 * candidate['clv_rank_score']
-        + 0.15 * candidate['timing_rank_score']
-        + 0.10 * candidate['window_rank_score']
+    candidate["priority_score"] = (
+        0.18 * candidate["roi_rank_score"]
+        + 0.18 * candidate["profit_rank_score"]
+        + 0.14 * candidate["churn_probability"]
+        + 0.10 * candidate["uplift_score"]
+        + 0.10 * candidate["clv_rank_score"]
+        + 0.12 * candidate["timing_rank_score"]
+        + 0.08 * candidate["window_rank_score"]
+        + 0.10 * candidate["intensity_fit_rank_score"]
     )
+
+    candidate["selection_score"] = 0.55 * candidate["priority_score"] + 0.45 * candidate["optimization_rank_score"]
 
     candidate = candidate.sort_values(
         [
-            'priority_score',
-            'timing_urgency_score',
-            'expected_roi',
-            'expected_incremental_profit',
-            'intervention_window_days',
-            'clv',
-            'customer_id',
+            "selection_score",
+            "priority_score",
+            "optimization_score",
+            "timing_urgency_score",
+            "expected_roi",
+            "expected_incremental_profit",
+            "intervention_window_days",
+            "coupon_cost",
+            "customer_id",
         ],
-        ascending=[False, False, False, False, True, False, True],
+        ascending=[False, False, False, False, False, False, True, True, True],
     ).reset_index(drop=True)
     return candidate
 
@@ -191,24 +175,24 @@ def budget_allocation_by_segment(
     if selected_customers.empty:
         return pd.DataFrame(
             {
-                'uplift_segment': all_segments,
-                'customer_count': [0] * len(all_segments),
-                'allocated_budget': [0.0] * len(all_segments),
-                'expected_profit': [0.0] * len(all_segments),
+                "uplift_segment": all_segments,
+                "intervention_intensity": ["-"] * len(all_segments),
+                "customer_count": [0] * len(all_segments),
+                "allocated_budget": [0.0] * len(all_segments),
+                "expected_profit": [0.0] * len(all_segments),
             }
         )
 
     grouped = (
-        selected_customers.groupby('uplift_segment', as_index=False)
+        selected_customers.groupby(["uplift_segment", "intervention_intensity"], as_index=False)
         .agg(
-            customer_count=('customer_id', 'count'),
-            allocated_budget=('coupon_cost', 'sum'),
-            expected_profit=('expected_incremental_profit', 'sum'),
+            customer_count=("customer_id", "nunique"),
+            allocated_budget=("coupon_cost", "sum"),
+            expected_profit=("expected_incremental_profit", "sum"),
         )
-        .set_index('uplift_segment')
+        .sort_values(["allocated_budget", "expected_profit"], ascending=[False, False])
+        .reset_index(drop=True)
     )
-
-    grouped = grouped.reindex(all_segments, fill_value=0).reset_index()
     return grouped
 
 
@@ -281,8 +265,26 @@ def get_budget_result(
         candidate['uplift_segment'].value_counts().reindex(all_segments, fill_value=0).astype(int).to_dict()
     )
 
-    cumulative_cost = candidate['coupon_cost'].cumsum()
-    selected = candidate[cumulative_cost <= budget].copy()
+    selected_rows = []
+    used_customers: set[int] = set()
+    spent = 0.0
+    for row in candidate.itertuples(index=False):
+        customer_id = int(getattr(row, "customer_id"))
+        cost = float(getattr(row, "coupon_cost", 0.0))
+        if customer_id in used_customers:
+            continue
+        if cost <= 0:
+            continue
+        if spent + cost > float(budget):
+            continue
+        selected_rows.append(row._asdict())
+        used_customers.add(customer_id)
+        spent += cost
+
+    if selected_rows:
+        selected = pd.DataFrame(selected_rows)
+    else:
+        selected = candidate.head(0).copy()
 
     spent = float(selected['coupon_cost'].sum()) if not selected.empty else 0.0
     expected_profit = float(selected['expected_incremental_profit'].sum()) if not selected.empty else 0.0
@@ -293,13 +295,15 @@ def get_budget_result(
         'spent': int(round(spent)),
         'remaining': int(round(budget - spent)),
         'num_targeted': int(len(selected)),
-        'candidate_customers': int(len(candidate)),
+        'candidate_customers': int(candidate['customer_id'].nunique()),
+        'candidate_actions': int(len(candidate)),
         'expected_incremental_profit': round(expected_profit, 2),
         'overall_roi': round(overall_roi, 6),
         'threshold': float(threshold),
         'max_customers_cap': int(max_customers or len(candidate)),
         'candidate_segment_counts': candidate_segment_counts,
         'survival_enriched': bool(resolved_survival is not None and not resolved_survival.empty),
+        'selected_intensity_counts': selected['intervention_intensity'].value_counts().to_dict() if not selected.empty else {},
         'avg_timing_urgency_score': round(float(candidate['timing_urgency_score'].mean()), 6),
         'avg_intervention_window_days': round(float(candidate['intervention_window_days'].mean()), 2),
     }

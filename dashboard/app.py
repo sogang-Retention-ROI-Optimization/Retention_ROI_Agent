@@ -1831,14 +1831,32 @@ elif view == "8. Uplift/최적화 결과 (실시간)":
             m3.metric("현재 잔여 예산", money(optimization_summary.get("remaining", 0)))
             m4.metric("현재 타겟 고객 수", f"{int(optimization_summary.get('num_targeted', 0)):,}")
 
+            intensity_counts = optimization_summary.get("selected_intensity_counts", {}) if optimization_summary else {}
+            if intensity_counts:
+                st.markdown("### 선택된 개입 강도 구성")
+                intensity_df = pd.DataFrame({
+                    "intervention_intensity": list(intensity_counts.keys()),
+                    "customer_count": list(intensity_counts.values()),
+                })
+                intensity_fig = px.bar(
+                    intensity_df,
+                    x="intervention_intensity",
+                    y="customer_count",
+                    text="customer_count",
+                    title="선택된 고객의 개입 강도 분포",
+                )
+                st.plotly_chart(intensity_fig, use_container_width=True)
+
             if not optimization_segment_budget_df.empty:
                 display_df = optimization_segment_budget_df.copy()
                 if "allocated_budget" in display_df.columns:
                     display_df["allocated_budget"] = display_df["allocated_budget"].map(money)
                 if "expected_profit" in display_df.columns:
                     display_df["expected_profit"] = display_df["expected_profit"].map(money)
-                st.markdown("### 세그먼트별 실시간 결과")
-                _render_dataframe_with_count(display_df, label="세그먼트별 실시간 결과")
+                result_heading = "### 세그먼트·강도별 실시간 결과" if "intervention_intensity" in display_df.columns else "### 세그먼트별 실시간 결과"
+                result_label = "세그먼트·강도별 실시간 결과" if "intervention_intensity" in display_df.columns else "세그먼트별 실시간 결과"
+                st.markdown(result_heading)
+                _render_dataframe_with_count(display_df, label=result_label)
 
             if not optimization_selected_customers_df.empty:
                 st.markdown("### 현재 조건에서 선정된 고객")

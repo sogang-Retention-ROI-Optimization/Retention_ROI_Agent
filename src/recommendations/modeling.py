@@ -29,7 +29,12 @@ TARGET_META_COLUMNS = [
     'recommended_intervention_window',
     'timing_priority_bucket',
     'short_term_churn_probability',
+    'intervention_intensity',
+    'intervention_intensity_label',
+    'recommended_action',
+    'selection_score',
 ]
+
 
 
 def _load_inputs(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

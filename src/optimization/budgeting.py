@@ -7,7 +7,8 @@ from typing import Dict
 
 import pandas as pd
 
-from src.optimization.timing import apply_survival_timing, load_survival_predictions
+from src.optimization.policy import build_intensity_action_candidates, normalize
+from src.optimization.timing import load_survival_predictions
 
 
 @dataclass
@@ -61,46 +62,64 @@ STRATEGY_BY_SEGMENT = {
 
 def _apply_strategy(df: pd.DataFrame, survival_predictions: pd.DataFrame | None = None) -> pd.DataFrame:
     mapping = pd.DataFrame.from_dict(STRATEGY_BY_SEGMENT, orient="index").reset_index().rename(columns={"index": "customer_segment"})
+    mapping = mapping.rename(columns={"cost": "strategy_cost", "effect_multiplier": "strategy_effect_multiplier"})
     out = df.merge(mapping, on="customer_segment", how="left")
-    out = apply_survival_timing(out, survival_predictions=survival_predictions)
-    out["strategy_cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0.0)
-    out["effect_multiplier"] = pd.to_numeric(out["effect_multiplier"], errors="coerce").fillna(0.0)
-    out["coupon_cost"] = out["strategy_cost"]
-    out["base_expected_revenue"] = (
-        pd.to_numeric(out["predicted_uplift"], errors="coerce").fillna(0.0).clip(lower=0.0)
-        * pd.to_numeric(out["predicted_clv_12m"], errors="coerce").fillna(0.0)
-        * out["effect_multiplier"]
-    )
-    out["expected_revenue"] = out["base_expected_revenue"] * pd.to_numeric(out["churn_timing_weight"], errors="coerce").fillna(1.0)
-    out["expected_incremental_profit"] = out["expected_revenue"] - out["strategy_cost"]
-    out["expected_roi"] = out["expected_incremental_profit"] / out["strategy_cost"].where(out["strategy_cost"] > 0, 1.0)
-    out["optimization_score"] = out["expected_incremental_profit"] / out["strategy_cost"].where(out["strategy_cost"] > 0, 1.0)
-    return out
+    enriched = build_intensity_action_candidates(out, survival_predictions=survival_predictions)
+    enriched["optimization_score"] = enriched["expected_incremental_profit"] / enriched["coupon_cost"].where(enriched["coupon_cost"] > 0, 1.0)
+    enriched["selection_score"] = 0.55 * enriched["priority_score"] + 0.45 * normalize(enriched["optimization_score"])
+    return enriched
 
 
 def _greedy_select(candidates: pd.DataFrame, budget: int) -> pd.DataFrame:
     if candidates.empty or budget <= 0:
         return candidates.head(0).copy()
-    ranked = candidates[candidates["strategy_cost"] > 0].copy()
+
+    ranked = candidates[candidates["coupon_cost"] > 0].copy()
     ranked = ranked[ranked["expected_revenue"] > 0].copy()
     ranked = ranked[ranked["expected_incremental_profit"] > 0].copy()
     ranked = ranked.sort_values(
-        ["optimization_score", "timing_urgency_score", "expected_revenue", "retention_priority_score", "customer_id"],
-        ascending=[False, False, False, False, True],
+        [
+            "selection_score",
+            "priority_score",
+            "optimization_score",
+            "timing_urgency_score",
+            "expected_revenue",
+            "retention_priority_score",
+            "customer_id",
+            "coupon_cost",
+        ],
+        ascending=[False, False, False, False, False, False, True, True],
     )
-    ranked["cumulative_cost"] = ranked["strategy_cost"].cumsum()
-    selected = ranked[ranked["cumulative_cost"] <= budget].copy()
-    return selected
+
+    selected_rows = []
+    used_customers: set[int] = set()
+    spent = 0.0
+    for row in ranked.itertuples(index=False):
+        customer_id = int(getattr(row, "customer_id"))
+        cost = float(getattr(row, "coupon_cost", 0.0))
+        if customer_id in used_customers:
+            continue
+        if cost <= 0:
+            continue
+        if spent + cost > float(budget):
+            continue
+        selected_rows.append(row._asdict())
+        used_customers.add(customer_id)
+        spent += cost
+
+    if not selected_rows:
+        return ranked.head(0).copy()
+    return pd.DataFrame(selected_rows)
 
 
 def _segment_allocation(selected: pd.DataFrame) -> pd.DataFrame:
     if selected.empty:
-        return pd.DataFrame(columns=["customer_segment", "customer_count", "allocated_budget", "expected_revenue", "expected_roi"])
+        return pd.DataFrame(columns=["customer_segment", "intervention_intensity", "customer_count", "allocated_budget", "expected_revenue", "expected_roi"])
     allocation = (
-        selected.groupby(["customer_segment", "strategy_name"], as_index=False)
+        selected.groupby(["customer_segment", "intervention_intensity"], as_index=False)
         .agg(
-            customer_count=("customer_id", "count"),
-            allocated_budget=("strategy_cost", "sum"),
+            customer_count=("customer_id", "nunique"),
+            allocated_budget=("coupon_cost", "sum"),
             expected_revenue=("expected_revenue", "sum"),
         )
     )
@@ -117,7 +136,7 @@ def _scenario_rows(candidates: pd.DataFrame, budget: int) -> pd.DataFrame:
         ("200%", int(budget * 2.0)),
     ]:
         sel = _greedy_select(candidates, scenario_budget)
-        spent = float(sel["strategy_cost"].sum()) if len(sel) else 0.0
+        spent = float(sel["coupon_cost"].sum()) if len(sel) else 0.0
         revenue = float(sel["expected_revenue"].sum()) if len(sel) else 0.0
         roi = ((revenue - spent) / spent) if spent > 0 else 0.0
         rows.append(
@@ -139,7 +158,7 @@ def run_budget_optimization(result_dir: Path, budget: int) -> OptimizationArtifa
     survival_predictions = load_survival_predictions(result_dir)
     candidates = _apply_strategy(segments, survival_predictions=survival_predictions)
     selected = _greedy_select(candidates, budget)
-    spent = float(selected["strategy_cost"].sum()) if len(selected) else 0.0
+    spent = float(selected["coupon_cost"].sum()) if len(selected) else 0.0
     revenue = float(selected["expected_revenue"].sum()) if len(selected) else 0.0
     profit = float(selected["expected_incremental_profit"].sum()) if len(selected) else 0.0
     roi = (profit / spent) if spent > 0 else 0.0
@@ -150,12 +169,14 @@ def run_budget_optimization(result_dir: Path, budget: int) -> OptimizationArtifa
         "spent": int(round(spent)),
         "remaining": int(round(budget - spent)),
         "num_targeted": int(len(selected)),
-        "candidate_customers": int(len(candidates[candidates["strategy_cost"] > 0])),
+        "candidate_customers": int(candidates["customer_id"].nunique()) if len(candidates) else 0,
+        "candidate_actions": int(len(candidates)),
         "expected_revenue": round(revenue, 2),
         "expected_incremental_profit": round(profit, 2),
         "overall_roi": round(roi, 6),
-        "baseline_method": "Greedy ranking by timing-adjusted incremental profit / cost",
-        "objective": "Maximize Σ(Uplift_i × CLV_i × SurvivalTiming_i × Action_i)",
+        "baseline_method": "Greedy multiple-choice selection over customer × timing × intensity actions",
+        "objective": "Maximize Σ(Uplift_i × CLV_i × SurvivalTiming_i × IntensityEffect_i × Action_i)",
+        "selected_intensity_counts": selected["intervention_intensity"].value_counts().to_dict() if len(selected) else {},
         "survival_enriched": bool(not survival_predictions.empty),
         "avg_timing_urgency_score": round(float(candidates["timing_urgency_score"].mean()), 6) if len(candidates) else 0.0,
     }
@@ -165,7 +186,7 @@ def run_budget_optimization(result_dir: Path, budget: int) -> OptimizationArtifa
     summary_path = result_dir / "optimization_summary.json"
     scenario_path = result_dir / "optimization_what_if.csv"
 
-    selected.sort_values(["optimization_score", "expected_revenue"], ascending=[False, False]).to_csv(selected_path, index=False)
+    selected.sort_values(["priority_score", "expected_revenue"], ascending=[False, False]).to_csv(selected_path, index=False)
     segment_allocation.to_csv(segment_path, index=False)
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     _scenario_rows(candidates, budget).to_csv(scenario_path, index=False)
