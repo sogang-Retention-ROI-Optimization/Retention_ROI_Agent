@@ -1012,7 +1012,7 @@ customers = bundle.customer_summary
 cohort_df = bundle.cohort_retention
 
 render_hero(
-    "AI 기반 고객 이탈 예측·개입 최적화·ROI 분석 플랫폼",
+    "고객 이탈 예측·개입 최적화·ROI 분석 플랫폼",
     "누가 이탈할 가능성이 높은지뿐 아니라, 언제 개입해야 하는지, 누구에게 예산을 우선 배분할지, " \
     "어떤 액션을 추천할지까지 연결해 보여주는 운영형 리텐션 분석 플랫폼입니다.",
 )
