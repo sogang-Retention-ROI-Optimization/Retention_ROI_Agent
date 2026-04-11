@@ -11,6 +11,7 @@ from src.clv.modeling import run_clv_pipeline
 from src.experiments.ab_testing import run_ab_test_analysis
 from src.features.engineering import build_feature_dataset
 from src.optimization.budgeting import run_budget_optimization
+from src.optimization.dose_response import fit_and_save_dose_response_policy_model
 from src.realtime.scoring import (
     RealtimeStreamConfig,
     bootstrap_realtime_state,
@@ -463,6 +464,12 @@ def run_optimize_pipeline(
         force_simulation=force_simulation,
         simulation_seed=simulation_seed,
         randomize_simulation=randomize_simulation,
+    )
+    fit_and_save_dose_response_policy_model(
+        data_dir=data_dir,
+        model_dir=resolved_model_dir,
+        result_dir=result_dir,
+        force_retrain=force_simulation or randomize_simulation,
     )
 
     artifacts = run_budget_optimization(result_dir=result_dir, budget=budget)

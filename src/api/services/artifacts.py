@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.api.settings import ApiSettings
 from src.api.services.analytics import get_budget_result
+from src.api.services.serialization import dataframe_to_records, to_builtin
 from src.optimization.timing import load_survival_predictions
 from src.workflows.pipeline_runner import (
     run_churn_training_pipeline,
@@ -219,14 +220,12 @@ def ensure_saved_results_artifacts(settings: ApiSettings, budget: int, rebuild: 
             data_dir=settings.resolved_data_dir,
             result_dir=settings.resolved_result_dir,
         )
-    if rebuild or optimization_artifacts_missing(settings) or optimization_budget_mismatch(settings, budget):
-        run_optimize_pipeline(
-            data_dir=settings.resolved_data_dir,
-            result_dir=settings.resolved_result_dir,
-            budget=int(budget),
-            model_dir=settings.resolved_model_dir,
-            feature_store_dir=settings.resolved_feature_store_dir,
-        )
+
+    # saved-results API는 uplift는 파일 기반으로 읽고, optimize는 현재 budget/threshold/max_customers
+    # 조건으로 즉시 재계산해서 반환한다. 따라서 이 엔드포인트에서 optimize 파이프라인 전체를
+    # 다시 돌릴 필요가 없다. 이렇게 하면 버전 차이로 인한 기존 joblib 역직렬화 실패가 있어도
+    # 대시보드의 실시간 비교 화면은 정상적으로 렌더링된다.
+    _ = int(budget)
 
 
 def load_training_artifacts_payload(
@@ -287,11 +286,11 @@ def load_saved_results_payload(
 
     return {
         "result_dir": str(result_dir),
-        "uplift_summary": uplift_summary,
-        "uplift_segmentation": uplift_segmentation.head(200).to_dict(orient="records"),
-        "optimization_summary": optimization_summary,
-        "optimization_segment_budget": optimization_segment_budget.to_dict(orient="records"),
-        "optimization_selected_customers": selected_customers.head(200).to_dict(orient="records"),
+        "uplift_summary": to_builtin(uplift_summary),
+        "uplift_segmentation": dataframe_to_records(uplift_segmentation.head(200)),
+        "optimization_summary": to_builtin(optimization_summary),
+        "optimization_segment_budget": dataframe_to_records(optimization_segment_budget),
+        "optimization_selected_customers": dataframe_to_records(selected_customers.head(200)),
         "parameters": {
             "budget": int(budget),
             "threshold": float(threshold),

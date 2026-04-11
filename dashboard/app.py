@@ -30,6 +30,11 @@ from dashboard.services.cohort_service import (
     get_retention_mode_label,
 )
 from dashboard.services.data_loader import load_dashboard_bundle
+from dashboard.services.decision_engine_service import (
+    aggregate_enhanced_segment_allocation,
+    get_baseline_budget_result,
+    get_decision_engine_factor_table,
+)
 from dashboard.services.llm_service import (
     DEFAULT_MODEL_NAME,
     answer_dashboard_question,
@@ -60,6 +65,7 @@ DASHBOARD_VIEW_ITEMS: tuple[tuple[str, str], ...] = (
     ("9", "개인화 추천"),
     ("10", "실시간 이탈 위험 스코어링"),
     ("11", "이탈 시점 예측 (Survival Analysis)"),
+    ("12", "의사결정 엔진 비교"),
 )
 
 DASHBOARD_VIEW_OPTIONS: tuple[str, ...] = tuple(f"{n}. {t}" for n, t in DASHBOARD_VIEW_ITEMS)
@@ -1044,7 +1050,7 @@ with st.sidebar:
     target_cap = 1000
     recommendation_per_customer = 3
 
-    if view in {"1. 이탈현황", "4. 예산 배분 결과", "5. 예상 최적화 ROI", "6. 리텐션 대상 고객 목록", "8. Uplift/최적화 결과 (실시간)", "9. 개인화 추천"}:
+    if view in {"1. 이탈현황", "4. 예산 배분 결과", "5. 예상 최적화 ROI", "6. 리텐션 대상 고객 목록", "8. Uplift/최적화 결과 (실시간)", "9. 개인화 추천", "12. 의사결정 엔진 비교"}:
         threshold = st.slider(
             "이탈 Threshold",
             min_value=0.10,
@@ -1073,7 +1079,7 @@ with st.sidebar:
             step=1,
         )
 
-    if view in {"4. 예산 배분 결과", "5. 예상 최적화 ROI", "8. Uplift/최적화 결과 (실시간)", "9. 개인화 추천"}:
+    if view in {"4. 예산 배분 결과", "5. 예상 최적화 ROI", "8. Uplift/최적화 결과 (실시간)", "9. 개인화 추천", "12. 의사결정 엔진 비교"}:
         budget = st.number_input(
             "총 마케팅 예산",
             min_value=100000,
@@ -1178,6 +1184,17 @@ selected_customers, optimize_summary, segment_allocation = get_budget_result(
     threshold=threshold,
     max_customers=target_cap,
 )
+
+if view == "12. 의사결정 엔진 비교":
+    baseline_selected_customers, baseline_optimize_summary, baseline_segment_allocation = get_baseline_budget_result(
+        customers,
+        budget=budget,
+        threshold=threshold,
+        max_customers=target_cap,
+    )
+else:
+    baseline_selected_customers, baseline_optimize_summary, baseline_segment_allocation = pd.DataFrame(), {}, pd.DataFrame()
+
 retention_targets = get_retention_targets(customers, threshold, top_n=top_n)
 
 if view == "9. 개인화 추천":
@@ -1552,13 +1569,38 @@ elif view == "4. 예산 배분 결과":
     if segment_allocation.empty or optimize_summary["num_targeted"] == 0:
         st.warning("현재 조건에서 예산 배분 대상 고객이 없습니다.")
     else:
-        bar_fig = px.bar(
-            segment_allocation,
-            x="uplift_segment",
-            y="allocated_budget",
-            text="customer_count",
-            title="세그먼트별 예산 배분",
+        chart_df = segment_allocation.copy()
+        label_threshold = float(chart_df["allocated_budget"].max()) * 0.08 if not chart_df.empty else 0.0
+        chart_df["customer_count_label"] = np.where(
+            (chart_df["customer_count"] >= 5) | (chart_df["allocated_budget"] >= label_threshold),
+            chart_df["customer_count"].astype(int).astype(str),
+            "",
         )
+
+        if "intervention_intensity" in chart_df.columns and chart_df["intervention_intensity"].nunique() > 1:
+            bar_fig = px.bar(
+                chart_df,
+                x="uplift_segment",
+                y="allocated_budget",
+                color="intervention_intensity",
+                barmode="group",
+                text="customer_count_label",
+                hover_data=["customer_count", "expected_profit"],
+                title="세그먼트·개입 강도별 예산 배분",
+            )
+            bar_fig.update_traces(textposition="outside", cliponaxis=False)
+            bar_fig.update_layout(legend_title_text="개입 강도")
+        else:
+            bar_fig = px.bar(
+                chart_df,
+                x="uplift_segment",
+                y="allocated_budget",
+                text="customer_count_label",
+                hover_data=["customer_count", "expected_profit"],
+                title="세그먼트별 예산 배분",
+            )
+            bar_fig.update_traces(textposition="outside", cliponaxis=False)
+
         st.plotly_chart(bar_fig, use_container_width=True)
 
         display_df = segment_allocation.copy()
@@ -2073,6 +2115,216 @@ elif view == "11. 이탈 시점 예측 (Survival Analysis)":
             max_rows=20,
         ) if not survival_predictions.empty else [],
         'survival_coefficients': survival_coefficients.head(15).to_dict(orient='records') if not survival_coefficients.empty else [],
+    }
+
+elif view == "12. 의사결정 엔진 비교":
+    st.subheader("의사결정 엔진 비교")
+    st.caption("기존 예산 최적화(이탈·업리프트·ROI 중심)와 현재 의사결정 엔진(이탈 시점 + intervention window + 개입 강도)을 같은 예산 조건에서 비교합니다.")
+
+    enhanced_segment_summary = aggregate_enhanced_segment_allocation(segment_allocation)
+    factor_table = get_decision_engine_factor_table()
+
+    baseline_profit = float(baseline_optimize_summary.get("expected_incremental_profit", 0.0))
+    enhanced_profit = float(optimize_summary.get("expected_incremental_profit", 0.0))
+    baseline_roi = float(baseline_optimize_summary.get("overall_roi", 0.0))
+    enhanced_roi = float(optimize_summary.get("overall_roi", 0.0))
+    baseline_targeted = int(baseline_optimize_summary.get("num_targeted", 0))
+    enhanced_targeted = int(optimize_summary.get("num_targeted", 0))
+    enhanced_window = float(optimize_summary.get("avg_intervention_window_days", 0.0) or 0.0)
+    enhanced_urgency = float(optimize_summary.get("avg_timing_urgency_score", 0.0) or 0.0)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(
+        "예상 증분 이익 변화",
+        money(enhanced_profit),
+        delta=money(enhanced_profit - baseline_profit),
+    )
+    m2.metric(
+        "ROI 변화",
+        pct(enhanced_roi),
+        delta=f"{(enhanced_roi - baseline_roi) * 100:.2f}%p",
+    )
+    m3.metric(
+        "선정 고객 수 변화",
+        f"{enhanced_targeted:,}",
+        delta=f"{enhanced_targeted - baseline_targeted:+d}명",
+    )
+    m4.metric(
+        "평균 개입 윈도우",
+        f"{enhanced_window:.1f}일",
+        delta=f"긴급도 {enhanced_urgency:.3f}",
+    )
+
+    st.info(
+        "현재 엔진은 '누가 위험한가'뿐 아니라 '얼마나 빨리 떠날 것 같은가'와 '어느 강도의 개입이 더 맞는가'까지 함께 고려합니다. "
+        "그래서 같은 예산이어도 단순 고ROI 고객 모음이 아니라, 더 시급한 고객에게 적절한 강도로 예산이 재배분됩니다."
+    )
+
+    comparison_rows = pd.DataFrame([
+        {
+            "비교 항목": "선정 고객 수",
+            "기존 엔진": baseline_targeted,
+            "현재 엔진": enhanced_targeted,
+            "변화": enhanced_targeted - baseline_targeted,
+        },
+        {
+            "비교 항목": "집행 예산",
+            "기존 엔진": baseline_optimize_summary.get("spent", 0),
+            "현재 엔진": optimize_summary.get("spent", 0),
+            "변화": int(optimize_summary.get("spent", 0)) - int(baseline_optimize_summary.get("spent", 0)),
+        },
+        {
+            "비교 항목": "예상 증분 이익",
+            "기존 엔진": baseline_profit,
+            "현재 엔진": enhanced_profit,
+            "변화": enhanced_profit - baseline_profit,
+        },
+        {
+            "비교 항목": "예상 ROI",
+            "기존 엔진": baseline_roi,
+            "현재 엔진": enhanced_roi,
+            "변화": enhanced_roi - baseline_roi,
+        },
+    ])
+
+    display_compare = comparison_rows.copy()
+    currency_rows = {"집행 예산", "예상 증분 이익"}
+    ratio_rows = {"예상 ROI"}
+    for idx, row in display_compare.iterrows():
+        metric_name = row["비교 항목"]
+        if metric_name in currency_rows:
+            display_compare.loc[idx, "기존 엔진"] = money(row["기존 엔진"])
+            display_compare.loc[idx, "현재 엔진"] = money(row["현재 엔진"])
+            display_compare.loc[idx, "변화"] = money(row["변화"])
+        elif metric_name in ratio_rows:
+            display_compare.loc[idx, "기존 엔진"] = pct(row["기존 엔진"])
+            display_compare.loc[idx, "현재 엔진"] = pct(row["현재 엔진"])
+            display_compare.loc[idx, "변화"] = f"{row['변화'] * 100:.2f}%p"
+        else:
+            display_compare.loc[idx, "기존 엔진"] = f"{int(row['기존 엔진']):,}"
+            display_compare.loc[idx, "현재 엔진"] = f"{int(row['현재 엔진']):,}"
+            display_compare.loc[idx, "변화"] = f"{int(row['변화']):+d}"
+
+    st.markdown("### 엔진이 고려하는 요소")
+    _render_dataframe_with_count(factor_table, label="의사결정 요소 비교")
+
+    st.markdown("### 결과가 어떻게 달라졌는가")
+    _render_dataframe_with_count(display_compare, label="기존 엔진 vs 현재 엔진")
+
+    compare_chart_df = pd.DataFrame([
+        {"engine": "기존 엔진", "metric": "예상 증분 이익", "value": baseline_profit},
+        {"engine": "현재 엔진", "metric": "예상 증분 이익", "value": enhanced_profit},
+        {"engine": "기존 엔진", "metric": "집행 예산", "value": float(baseline_optimize_summary.get("spent", 0))},
+        {"engine": "현재 엔진", "metric": "집행 예산", "value": float(optimize_summary.get("spent", 0))},
+    ])
+    compare_fig = px.bar(
+        compare_chart_df,
+        x="metric",
+        y="value",
+        color="engine",
+        barmode="group",
+        title="핵심 수치 비교",
+    )
+    st.plotly_chart(compare_fig, use_container_width=True)
+
+    baseline_segment_chart = baseline_segment_allocation.copy()
+    baseline_segment_chart["engine"] = "기존 엔진"
+    enhanced_segment_chart = enhanced_segment_summary.copy()
+    enhanced_segment_chart["engine"] = "현재 엔진"
+    segment_compare_df = pd.concat([baseline_segment_chart, enhanced_segment_chart], ignore_index=True)
+
+    if not segment_compare_df.empty:
+        segment_fig = px.bar(
+            segment_compare_df,
+            x="uplift_segment",
+            y="allocated_budget",
+            color="engine",
+            barmode="group",
+            hover_data=["customer_count", "expected_profit"],
+            title="세그먼트별 예산 재배분 비교",
+        )
+        st.plotly_chart(segment_fig, use_container_width=True)
+
+    left_col, right_col = st.columns(2)
+
+    with left_col:
+        if not selected_customers.empty and "timing_priority_bucket" in selected_customers.columns:
+            timing_df = (
+                selected_customers.groupby("timing_priority_bucket", as_index=False)
+                .agg(customer_count=("customer_id", "nunique"))
+                .sort_values("customer_count", ascending=False)
+            )
+            timing_fig = px.bar(
+                timing_df,
+                x="timing_priority_bucket",
+                y="customer_count",
+                text="customer_count",
+                title="현재 엔진이 잡아낸 개입 시점 분포",
+            )
+            st.plotly_chart(timing_fig, use_container_width=True)
+
+    with right_col:
+        intensity_counts = optimize_summary.get("selected_intensity_counts", {}) if optimize_summary else {}
+        if intensity_counts:
+            intensity_df = pd.DataFrame({
+                "intervention_intensity": list(intensity_counts.keys()),
+                "customer_count": list(intensity_counts.values()),
+            })
+            intensity_fig = px.bar(
+                intensity_df,
+                x="intervention_intensity",
+                y="customer_count",
+                text="customer_count",
+                title="현재 엔진의 개입 강도 선택 결과",
+            )
+            st.plotly_chart(intensity_fig, use_container_width=True)
+
+    if not selected_customers.empty:
+        st.markdown("### 현재 엔진이 실제로 선택한 고객 예시")
+        preview_df = selected_customers.copy()
+        preview_columns = [
+            "customer_id",
+            "persona",
+            "uplift_segment",
+            "recommended_intervention_window",
+            "intervention_intensity",
+            "churn_probability",
+            "uplift_score",
+            "coupon_cost",
+            "expected_incremental_profit",
+            "expected_roi",
+        ]
+        preview_columns = [column for column in preview_columns if column in preview_df.columns]
+        preview_df = preview_df[preview_columns].head(20).copy()
+        if "churn_probability" in preview_df.columns:
+            preview_df["churn_probability"] = preview_df["churn_probability"].map(lambda x: f"{float(x):.3f}")
+        if "uplift_score" in preview_df.columns:
+            preview_df["uplift_score"] = preview_df["uplift_score"].map(lambda x: f"{float(x):.3f}")
+        if "coupon_cost" in preview_df.columns:
+            preview_df["coupon_cost"] = preview_df["coupon_cost"].map(money)
+        if "expected_incremental_profit" in preview_df.columns:
+            preview_df["expected_incremental_profit"] = preview_df["expected_incremental_profit"].map(money)
+        if "expected_roi" in preview_df.columns:
+            preview_df["expected_roi"] = preview_df["expected_roi"].map(lambda x: f"{float(x):.2%}")
+        _render_dataframe_with_count(preview_df, label="현재 엔진 선택 고객 예시")
+
+    llm_payload = {
+        "decision_engine_factors": factor_table.to_dict(orient="records"),
+        "baseline_summary": baseline_optimize_summary,
+        "enhanced_summary": optimize_summary,
+        "enhanced_segment_summary": enhanced_segment_summary.to_dict(orient="records") if not enhanced_segment_summary.empty else [],
+        "selected_customer_preview": dataframe_snapshot(
+            selected_customers,
+            columns=[
+                "customer_id",
+                "uplift_segment",
+                "recommended_intervention_window",
+                "intervention_intensity",
+                "expected_incremental_profit",
+                "expected_roi",
+            ],
+            max_rows=15,
+        ) if not selected_customers.empty else [],
     }
 
 if llm_enabled:

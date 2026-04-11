@@ -5,6 +5,7 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from src.optimization.dose_response import ACTION_INTENSITIES, load_dose_response_policy_model
 from src.optimization.timing import apply_survival_timing
 
 
@@ -112,71 +113,129 @@ def _resolve_segment_bias(row: pd.Series, intensity_key: str) -> float:
     return 1.0
 
 
-def _build_action_rows(base: pd.DataFrame) -> pd.DataFrame:
-    rows: list[pd.DataFrame] = []
+def _resolve_intensity_profiles(dose_response_model=None) -> dict[str, dict[str, float | str]]:
+    profiles = {key: value.copy() for key, value in INTENSITY_PROFILES.items()}
+    if dose_response_model is None:
+        return profiles
+    learned_costs = getattr(dose_response_model, "intensity_cost_multipliers", {}) or {}
+    for intensity_key in ACTION_INTENSITIES:
+        learned_cost = learned_costs.get(intensity_key)
+        if learned_cost is not None and np.isfinite(float(learned_cost)):
+            profiles[intensity_key]["cost_multiplier"] = float(np.clip(float(learned_cost), 0.35, 2.10))
+    return profiles
+
+
+def _apply_learned_dose_response(frame: pd.DataFrame, intensity_key: str, dose_response_model) -> pd.DataFrame:
+    learned = dose_response_model.predict_effect_frame(frame, intensity_key=intensity_key)
+    out = frame.copy()
+    out["dose_response_enabled"] = True
+    out["dose_response_model_version"] = getattr(dose_response_model, "version", "unknown")
+    out["segment_intensity_bias"] = 1.0
+    out["dose_response_incremental_effect"] = safe_numeric(learned["dose_response_incremental_effect"], default=0.0).clip(-0.35, 0.75)
+    out["dose_response_retention_prob_treated"] = safe_numeric(learned["dose_response_retention_prob_treated"], default=0.0).clip(0.0, 1.0)
+    out["dose_response_retention_prob_control"] = safe_numeric(learned["dose_response_retention_prob_control"], default=0.0).clip(0.0, 1.0)
+
+    uplift_anchor = safe_numeric(out.get("uplift_score"), default=0.0).abs().clip(lower=0.02)
+    value_basis = column_or_default(out, "predicted_clv_12m", np.nan)
+    fallback_clv = column_or_default(out, "clv", np.nan)
+    fallback_revenue = column_or_default(out, "base_expected_revenue", 0.0)
+    value_basis = value_basis.where(value_basis.notna(), fallback_clv)
+    value_basis = value_basis.where(value_basis.notna(), fallback_revenue)
+    value_basis = value_basis.clip(lower=0.0)
+
+    out["intensity_effect_multiplier"] = (out["dose_response_incremental_effect"].abs() / uplift_anchor).clip(lower=0.20, upper=2.50)
+    out["expected_revenue"] = (
+        out["dose_response_incremental_effect"]
+        * out["strategy_effect_multiplier"]
+        * value_basis
+        * out["churn_timing_weight"]
+    ).clip(lower=0.0)
+    out["expected_incremental_profit"] = (out["expected_revenue"] - out["coupon_cost"]).clip(lower=-out["coupon_cost"])
+    out["expected_roi"] = out["expected_incremental_profit"] / out["coupon_cost"].where(out["coupon_cost"] > 0, 1.0)
+    return out
+
+
+def _apply_heuristic_intensity(frame: pd.DataFrame, intensity_key: str, profile: dict[str, float | str]) -> pd.DataFrame:
+    out = frame.copy()
+    out["dose_response_enabled"] = False
+    out["dose_response_model_version"] = "heuristic_fallback"
+    out["segment_intensity_bias"] = out.apply(_resolve_segment_bias, axis=1, intensity_key=intensity_key)
+    out["intensity_cost_multiplier"] = float(profile["cost_multiplier"])
+    out["coupon_cost"] = (out["strategy_cost"] * out["intensity_cost_multiplier"]).round(2)
+
+    response_readiness = (
+        0.38 * out["coupon_affinity_norm"]
+        + 0.20 * out["price_sensitivity_norm"]
+        + 0.22 * out["uplift_score_norm"]
+        + 0.20 * out["timing_urgency_score"]
+    ).clip(lower=0.0, upper=1.0)
+    urgency_pressure = (
+        0.55 * out["timing_urgency_score"]
+        + 0.25 * out["risk_percentile"]
+        + 0.20 * (1.0 - out["window_rank_score"])
+    ).clip(lower=0.0, upper=1.0)
+    low_intensity_preference = (0.55 * out["coupon_affinity_norm"] + 0.45 * out["uplift_score_norm"]).clip(0.0, 1.0)
+
+    base_effect = float(profile["base_effect_multiplier"])
+    timing_weight = float(profile["timing_weight"])
+    elasticity = float(profile["response_elasticity"])
+
+    if intensity_key == "low":
+        intensity_fit = 0.86 + 0.18 * low_intensity_preference + 0.08 * (1.0 - urgency_pressure)
+    elif intensity_key == "mid":
+        intensity_fit = 0.94 + 0.12 * response_readiness + 0.06 * urgency_pressure
+    else:
+        intensity_fit = (
+            0.72
+            + 0.18 * response_readiness
+            + 0.16 * urgency_pressure
+            + 0.08 * out["coupon_affinity_norm"]
+            + 0.06 * out["price_sensitivity_norm"]
+            - 0.14 * (1.0 - response_readiness)
+        )
+
+    out["intensity_effect_multiplier"] = (
+        base_effect
+        * timing_weight
+        * out["segment_intensity_bias"]
+        * intensity_fit
+        * (1.0 + elasticity * (response_readiness - 0.5))
+    ).clip(lower=0.35, upper=1.25)
+
+    out["expected_incremental_profit"] = (
+        out["base_net_incremental_profit"]
+        * out["churn_timing_weight"]
+        * out["intensity_effect_multiplier"]
+        - (out["coupon_cost"] - out["strategy_cost"])
+    ).clip(lower=-out["coupon_cost"])
+    out["expected_revenue"] = (out["expected_incremental_profit"] + out["coupon_cost"]).clip(lower=0.0)
+    out["expected_roi"] = out["expected_incremental_profit"] / out["coupon_cost"].where(out["coupon_cost"] > 0, 1.0)
+    out["dose_response_incremental_effect"] = np.nan
+    out["dose_response_retention_prob_treated"] = np.nan
+    out["dose_response_retention_prob_control"] = np.nan
+    return out
+
+
+def _build_action_rows(base: pd.DataFrame, dose_response_model=None) -> pd.DataFrame:
     if base.empty:
         return base.head(0).copy()
 
-    response_readiness = (
-        0.38 * base["coupon_affinity_norm"]
-        + 0.20 * base["price_sensitivity_norm"]
-        + 0.22 * base["uplift_score_norm"]
-        + 0.20 * base["timing_urgency_score"]
-    ).clip(lower=0.0, upper=1.0)
-    urgency_pressure = (
-        0.55 * base["timing_urgency_score"]
-        + 0.25 * base["risk_percentile"]
-        + 0.20 * (1.0 - base["window_rank_score"])
-    ).clip(lower=0.0, upper=1.0)
-    low_intensity_preference = (0.55 * base["coupon_affinity_norm"] + 0.45 * base["uplift_score_norm"]).clip(0.0, 1.0)
-
-    for intensity_key, profile in INTENSITY_PROFILES.items():
+    profiles = _resolve_intensity_profiles(dose_response_model=dose_response_model)
+    rows: list[pd.DataFrame] = []
+    for intensity_key in ACTION_INTENSITIES:
+        profile = profiles[intensity_key]
         frame = base.copy()
         frame["intervention_intensity"] = intensity_key
         frame["intervention_intensity_label"] = str(profile["label"])
         frame["action_id"] = frame["customer_id"].astype(str) + "::" + intensity_key
-
-        frame["segment_intensity_bias"] = frame.apply(_resolve_segment_bias, axis=1, intensity_key=intensity_key)
         frame["intensity_cost_multiplier"] = float(profile["cost_multiplier"])
         frame["coupon_cost"] = (frame["strategy_cost"] * frame["intensity_cost_multiplier"]).round(2)
 
-        base_effect = float(profile["base_effect_multiplier"])
-        timing_weight = float(profile["timing_weight"])
-        elasticity = float(profile["response_elasticity"])
-
-        if intensity_key == "low":
-            intensity_fit = 0.86 + 0.18 * low_intensity_preference + 0.08 * (1.0 - urgency_pressure)
-        elif intensity_key == "mid":
-            intensity_fit = 0.94 + 0.12 * response_readiness + 0.06 * urgency_pressure
+        if dose_response_model is not None:
+            frame = _apply_learned_dose_response(frame, intensity_key=intensity_key, dose_response_model=dose_response_model)
         else:
-            intensity_fit = (
-                0.72
-                + 0.18 * response_readiness
-                + 0.16 * urgency_pressure
-                + 0.08 * frame["coupon_affinity_norm"]
-                + 0.06 * frame["price_sensitivity_norm"]
-                - 0.14 * (1.0 - response_readiness)
-            )
+            frame = _apply_heuristic_intensity(frame, intensity_key=intensity_key, profile=profile)
 
-        frame["intensity_effect_multiplier"] = (
-            base_effect
-            * timing_weight
-            * frame["segment_intensity_bias"]
-            * intensity_fit
-            * (1.0 + elasticity * (response_readiness - 0.5))
-        ).clip(lower=0.35, upper=1.25)
-
-        frame["expected_incremental_profit"] = (
-            frame["base_net_incremental_profit"]
-            * frame["churn_timing_weight"]
-            * frame["intensity_effect_multiplier"]
-            - (frame["coupon_cost"] - frame["strategy_cost"])
-        ).clip(lower=-frame["coupon_cost"])
-        frame["expected_revenue"] = (frame["expected_incremental_profit"] + frame["coupon_cost"]).clip(lower=0.0)
-        frame["expected_roi"] = frame["expected_incremental_profit"] / frame["coupon_cost"].where(
-            frame["coupon_cost"] > 0,
-            1.0,
-        )
         frame["recommended_action"] = (
             frame["strategy_name"].astype(str)
             + " · "
@@ -193,6 +252,8 @@ def build_intensity_action_candidates(
     survival_predictions: Optional[pd.DataFrame] = None,
     *,
     customer_id_col: str = "customer_id",
+    dose_response_model=None,
+    use_learned_dose_response: bool = True,
 ) -> pd.DataFrame:
     if df.empty:
         return df.head(0).copy()
@@ -218,7 +279,11 @@ def build_intensity_action_candidates(
     base["base_expected_revenue"] = baseline_revenue.clip(lower=0.0)
     base["base_net_incremental_profit"] = baseline_profit.clip(lower=0.0)
 
-    action_candidates = _build_action_rows(base)
+    resolved_dose_model = dose_response_model
+    if resolved_dose_model is None and use_learned_dose_response:
+        resolved_dose_model = load_dose_response_policy_model()
+
+    action_candidates = _build_action_rows(base, dose_response_model=resolved_dose_model)
     action_candidates["roi_rank_score"] = normalize(action_candidates["expected_roi"])
     action_candidates["profit_rank_score"] = normalize(action_candidates["expected_incremental_profit"])
     predicted_clv = column_or_default(action_candidates, "predicted_clv_12m", np.nan)

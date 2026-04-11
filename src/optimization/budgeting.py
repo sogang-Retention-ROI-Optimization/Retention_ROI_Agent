@@ -7,6 +7,7 @@ from typing import Dict
 
 import pandas as pd
 
+from src.optimization.dose_response import load_dose_response_policy_model, load_dose_response_summary
 from src.optimization.policy import build_intensity_action_candidates, normalize
 from src.optimization.timing import load_survival_predictions
 
@@ -64,7 +65,13 @@ def _apply_strategy(df: pd.DataFrame, survival_predictions: pd.DataFrame | None 
     mapping = pd.DataFrame.from_dict(STRATEGY_BY_SEGMENT, orient="index").reset_index().rename(columns={"index": "customer_segment"})
     mapping = mapping.rename(columns={"cost": "strategy_cost", "effect_multiplier": "strategy_effect_multiplier"})
     out = df.merge(mapping, on="customer_segment", how="left")
-    enriched = build_intensity_action_candidates(out, survival_predictions=survival_predictions)
+    dose_response_model = load_dose_response_policy_model()
+    enriched = build_intensity_action_candidates(
+        out,
+        survival_predictions=survival_predictions,
+        dose_response_model=dose_response_model,
+        use_learned_dose_response=True,
+    )
     enriched["optimization_score"] = enriched["expected_incremental_profit"] / enriched["coupon_cost"].where(enriched["coupon_cost"] > 0, 1.0)
     enriched["selection_score"] = 0.55 * enriched["priority_score"] + 0.45 * normalize(enriched["optimization_score"])
     return enriched
@@ -164,6 +171,7 @@ def run_budget_optimization(result_dir: Path, budget: int) -> OptimizationArtifa
     roi = (profit / spent) if spent > 0 else 0.0
 
     segment_allocation = _segment_allocation(selected)
+    dose_response_summary = load_dose_response_summary(result_dir=result_dir)
     summary = {
         "budget": int(budget),
         "spent": int(round(spent)),
@@ -175,10 +183,14 @@ def run_budget_optimization(result_dir: Path, budget: int) -> OptimizationArtifa
         "expected_incremental_profit": round(profit, 2),
         "overall_roi": round(roi, 6),
         "baseline_method": "Greedy multiple-choice selection over customer × timing × intensity actions",
-        "objective": "Maximize Σ(Uplift_i × CLV_i × SurvivalTiming_i × IntensityEffect_i × Action_i)",
+        "objective": "Maximize Σ(learned dose-response uplift × value basis × survival timing − action cost)",
         "selected_intensity_counts": selected["intervention_intensity"].value_counts().to_dict() if len(selected) else {},
         "survival_enriched": bool(not survival_predictions.empty),
+        "dose_response_enriched": bool(len(candidates) and candidates.get("dose_response_enabled", pd.Series(dtype=bool)).fillna(False).any()),
+        "dose_response_model_version": str(candidates["dose_response_model_version"].iloc[0]) if len(candidates) and "dose_response_model_version" in candidates.columns else None,
         "avg_timing_urgency_score": round(float(candidates["timing_urgency_score"].mean()), 6) if len(candidates) else 0.0,
+        "avg_selected_incremental_effect": round(float(selected["dose_response_incremental_effect"].mean()), 6) if len(selected) and "dose_response_incremental_effect" in selected.columns else 0.0,
+        "dose_response_summary": dose_response_summary,
     }
 
     selected_path = result_dir / "optimization_selected_customers.csv"

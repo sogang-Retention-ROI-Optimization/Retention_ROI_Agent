@@ -233,6 +233,8 @@ def get_budget_result(
             'max_customers_cap': int(max_customers or 0),
             'candidate_segment_counts': {seg: 0 for seg in _segment_order(customers)},
             'survival_enriched': False,
+            'dose_response_enriched': False,
+            'dose_response_model_version': None,
         }
         return empty, summary, budget_allocation_by_segment(empty, _segment_order(customers))
 
@@ -258,6 +260,8 @@ def get_budget_result(
             'max_customers_cap': int(max_customers or 0),
             'candidate_segment_counts': {seg: 0 for seg in all_segments},
             'survival_enriched': False,
+            'dose_response_enriched': False,
+            'dose_response_model_version': None,
         }
         return candidate, summary, budget_allocation_by_segment(candidate, all_segments)
 
@@ -303,6 +307,8 @@ def get_budget_result(
         'max_customers_cap': int(max_customers or len(candidate)),
         'candidate_segment_counts': candidate_segment_counts,
         'survival_enriched': bool(resolved_survival is not None and not resolved_survival.empty),
+        'dose_response_enriched': bool(candidate.get('dose_response_enabled', pd.Series(dtype=bool)).fillna(False).any()) if not candidate.empty else False,
+        'dose_response_model_version': str(candidate['dose_response_model_version'].iloc[0]) if not candidate.empty and 'dose_response_model_version' in candidate.columns else None,
         'selected_intensity_counts': selected['intervention_intensity'].value_counts().to_dict() if not selected.empty else {},
         'avg_timing_urgency_score': round(float(candidate['timing_urgency_score'].mean()), 6),
         'avg_intervention_window_days': round(float(candidate['intervention_window_days'].mean()), 2),
